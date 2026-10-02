@@ -172,12 +172,13 @@ const HANDLERS = {
   pulse(pc, t, beat, alpha, states) {
     const p = pc.clip.params;
     const division = posNum(p.division, 1);
+    const offset = num(p.offset, 0);
     const decay = clamp(num(p.decay, 0.6), 0.01, 1);
     const level = num(p.level, 1);
     const spread = num(p.spread, 0);
     for (const { rec, slot } of pc.members) {
       const s = states.get(rec.id);
-      const phase = fract(beat / division - (spread * slot) / pc.slotCount);
+      const phase = fract((beat - offset) / division - (spread * slot) / pc.slotCount);
       const env = phase < decay ? (1 - phase / decay) ** 2 : 0;
       setDimmer(s, level * env, alpha, p.dimmerMode);
       if (p.color != null) setColor(s, p.color, alpha);

@@ -71,6 +71,8 @@ export const CLIP_TYPES = {
     color: '#e8a33d',
     params: [
       { key: 'division', label: 'Every', type: 'select', options: DIVISIONS, default: 1, numeric: true },
+      // 1 with "every 2 beats" = beats 2 and 4 (a backbeat); 0.5 = the off-beats.
+      { key: 'offset', label: 'Offset (beats)', type: 'number', min: 0, max: 8, step: 0.25, default: 0 },
       { key: 'decay', label: 'Decay', type: 'range', min: 0.05, max: 1, step: 0.01, default: 0.6 },
       intensity,
       { key: 'spread', label: 'Phase spread', type: 'range', min: 0, max: 1, step: 0.01, default: 0 },

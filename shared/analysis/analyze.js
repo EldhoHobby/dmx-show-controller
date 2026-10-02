@@ -8,13 +8,14 @@
 //      gets an exact least-squares grid, a drifting one keeps the tracked beats
 //   5. downbeat phase from where energy changes land (phrases change on bar lines)
 //   6. sections from bar-level novelty, snapped to 4/8-bar phrases; labelled by energy
+//   7. drum pattern per beat: kick and snare on the beat, hi-hat on the off-beat
 //
 // Runs in a Web Worker in the browser and directly in Node for tests. Pure JS, no DOM.
 
 import { createFFT, hannWindow } from './fft.js';
 import { clamp, median } from '../util.js';
 
-export const ANALYSIS_VERSION = 1;
+export const ANALYSIS_VERSION = 2;
 
 const FFT_SIZE = 1024;
 const HOP = 256;
@@ -54,6 +55,7 @@ export function analyzeAudio(input, options = {}) {
   const debug = options.debug ? {} : null;
   const sections = segmentSections(grid.beats, downbeat, perBeat, 4, durationMs, debug);
   const drops = sections.filter((s) => s.label === 'drop').map((s) => s.start);
+  const drums = drumPattern(grid.beats, feat, debug);
 
   onProgress(0.96, 'Finishing');
   const salience = beatSalience(local, tracked);
@@ -70,6 +72,7 @@ export function analyzeAudio(input, options = {}) {
     sections,
     drops,
     energy: perBeat.combined.map((v) => round(v, 3)),
+    drums,
     peaks: waveformPeaks(mono, 2048),
     onsets: pickOnsets(onsetN, feat.frameRate),
   };
@@ -120,7 +123,9 @@ function logBands(binHz, bins, count = 36, fmin = 40, fmax = 10000) {
     const key = `${b0}:${b1}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    bands.push({ b0, b1, low: f1 <= 160 });
+    // Kick drums live below 160 Hz; the crack of a snare or clap at 1-4.7 kHz, above most of a
+    // kick's harmonics; hi-hats above 6 kHz.
+    bands.push({ b0, b1, low: f1 <= 160, mid: f0 >= 1000 && f1 <= 4700, high: f0 >= 6000 });
   }
   return bands;
 }
@@ -140,11 +145,15 @@ function spectralFeatures(mono, rate, progress) {
   const [h0, h1] = band(BANDS.high);
   const bands = logBands(binHz, bins);
   const lowBands = Math.max(1, bands.filter((b) => b.low).length);
+  const midBands = Math.max(1, bands.filter((b) => b.mid).length);
+  const highBands = Math.max(1, bands.filter((b) => b.high).length);
   const mag = new Float64Array(bins + 1);
   let prev = new Float64Array(bands.length);
   let cur = new Float64Array(bands.length);
   const onset = new Float32Array(frames);
   const onsetLow = new Float32Array(frames);
+  const onsetMid = new Float32Array(frames);
+  const onsetHigh = new Float32Array(frames);
   const rms = new Float32Array(frames);
   const low = new Float32Array(frames);
   const high = new Float32Array(frames);
@@ -179,6 +188,8 @@ function spectralFeatures(mono, rate, progress) {
     }
     let fl = 0;
     let fLow = 0;
+    let fMid = 0;
+    let fHigh = 0;
     for (let j = 0; j < bands.length; j++) {
       const { b0, b1 } = bands[j];
       let p = 0;
@@ -189,10 +200,14 @@ function spectralFeatures(mono, rate, progress) {
       if (d > 0) {
         fl += d;
         if (bands[j].low) fLow += d;
+        else if (bands[j].mid) fMid += d;
+        else if (bands[j].high) fHigh += d;
       }
     }
     onset[t] = t === 0 ? 0 : fl / bands.length;
     onsetLow[t] = t === 0 ? 0 : fLow / lowBands;
+    onsetMid[t] = t === 0 ? 0 : fMid / midBands;
+    onsetHigh[t] = t === 0 ? 0 : fHigh / highBands;
     low[t] = eLow;
     high[t] = eHigh;
     const tmp = prev;
@@ -200,7 +215,7 @@ function spectralFeatures(mono, rate, progress) {
     cur = tmp;
     if ((t & 511) === 0) progress(t / frames);
   }
-  return { onset, onsetLow, rms, low, high, frameRate: rate / H, frames };
+  return { onset, onsetLow, onsetMid, onsetHigh, rms, low, high, frameRate: rate / H, frames };
 }
 
 /** Remove the local mean (+-w frames), keep the positive part, scale to unit RMS. */
@@ -508,6 +523,48 @@ function findDownbeat(perBeat, beatsMs, trackedMs) {
   let best = 0;
   for (let p = 1; p < 4; p++) if (score[p] > score[best]) best = p;
   return best;
+}
+
+// ---- 7. Drum pattern ---------------------------------------------------------------------
+
+// Per band: flux below `floor` (log-power units per band) is background, not a drum; `minRef`
+// is the least a loud hit is assumed to reach, so a song without, say, hi-hats does not
+// scale its background hiss up into a hi-hat pattern. Tuned on the synthetic demo track,
+// whose snares and hi-hats are quiet; real recordings land well above these.
+const DRUM_SCALE = { kick: { floor: 0.2, minRef: 0.8 }, snare: { floor: 0.015, minRef: 0.08 }, hat: { floor: 0.015, minRef: 0.08 } };
+
+/**
+ * How strongly a kick, a snare/clap and a hi-hat sound on each beat: kick and snare on the
+ * beat itself, the hi-hat on the off-beat (the 8th note after it), where dance music puts
+ * them. Each is scaled 0..1 against its own loud hits (95th percentile), with a floor so a
+ * song without hi-hats does not turn background hiss into a hi-hat pattern.
+ */
+function drumPattern(beatsMs, feat, debug = null) {
+  const fr = feat.frameRate;
+  const n = beatsMs.length;
+  const strongest = (arr, ms) => {
+    const c = ((ms - ONSET_LATENCY_MS) / 1000) * fr;
+    let m = 0;
+    for (let t = Math.floor(c - 1.5); t <= Math.ceil(c + 1.5); t++) if (t >= 0 && t < feat.frames && arr[t] > m) m = arr[t];
+    return m;
+  };
+  const kick = new Array(n);
+  const snare = new Array(n);
+  const hat = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = beatsMs[i];
+    const next = i + 1 < n ? beatsMs[i + 1] : b + (b - (i > 0 ? beatsMs[i - 1] : b - 500));
+    kick[i] = strongest(feat.onsetLow, b);
+    snare[i] = strongest(feat.onsetMid, b);
+    hat[i] = strongest(feat.onsetHigh, (b + next) / 2);
+  }
+  if (debug) debug.drumsRaw = { kick: kick.slice(), snare: snare.slice(), hat: hat.slice() };
+  const scale = (values, { floor, minRef }) => {
+    const sorted = values.slice().sort((x, y) => x - y);
+    const ref = Math.max(minRef, sorted[Math.floor(0.95 * (sorted.length - 1))] || 0);
+    return values.map((v) => (v < floor ? 0 : round(clamp(v / ref, 0, 1), 2)));
+  };
+  return { kick: scale(kick, DRUM_SCALE.kick), snare: scale(snare, DRUM_SCALE.snare), hat: scale(hat, DRUM_SCALE.hat) };
 }
 
 // ---- 6. Sections -------------------------------------------------------------------------

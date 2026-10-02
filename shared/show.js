@@ -13,7 +13,9 @@ export const SHOW_VERSION = 1;
 export const DEFAULT_TRACKS = [
   { id: 'trk_base', name: 'Base look', muted: false },
   { id: 'trk_rhythm', name: 'Rhythm', muted: false },
+  { id: 'trk_hats', name: 'Hi-hat flicks', muted: false },
   { id: 'trk_beams', name: 'Mover beams', muted: false },
+  { id: 'trk_snare', name: 'Snare flares', muted: false },
   { id: 'trk_move', name: 'Movement', muted: false },
   { id: 'trk_color', name: 'Colour FX', muted: false },
   { id: 'trk_accent', name: 'Accents', muted: false },
@@ -256,6 +258,14 @@ export function normalizeClip(c, trackIds) {
   };
 }
 
+/** Per-beat drum pattern from the song analysis (version 2+): kick, snare, hat, each 0..1. */
+function normalizeDrums(d) {
+  if (!isPlainObject(d)) return null;
+  const list = (v) => numArray(v).slice(0, 50000).map(clamp01);
+  const out = { kick: list(d.kick), snare: list(d.snare), hat: list(d.hat) };
+  return out.kick.length ? out : null;
+}
+
 export function normalizeAnalysis(a) {
   if (!isPlainObject(a)) return null;
   const sections = Array.isArray(a.sections)
@@ -272,6 +282,7 @@ export function normalizeAnalysis(a) {
     energy: numArray(a.energy),
     peaks: numArray(a.peaks),
     onsets: numArray(a.onsets),
+    drums: normalizeDrums(a.drums),
     version: int(a.version, 1),
   };
 }
