@@ -16,7 +16,7 @@ import { loadConfig, normalizeConfig, saveConfig } from './config.js';
 import { attachWebSocketServer } from './ws-server.js';
 import { createRequestHandler, sameOrigin } from './http.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseArgs(argv) {
