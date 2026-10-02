@@ -303,6 +303,13 @@ test('engine end to end: manual faders, scenes, calibration and live-audio hits 
     const reactive = a.messages.findLast((m) => m.t === 'reactive').reactive;
     assert.equal(reactive.count.low, 6);
     assert.equal(reactive.bpm, 128);
+    // The engine's live tracker found the beat of those six kicks (about 400 ms apart).
+    assert.equal(reactive.auto.section, 'groove');
+    assert.ok(reactive.auto.bpm > 135 && reactive.auto.bpm < 155, `live tempo ${reactive.auto.bpm}`);
+    a.send({ t: 'live', changes: { autoShow: true } });
+    await a.fresh((m) => m.t === 'live' && m.live.autoShow === true);
+    a.send({ t: 'live', changes: { autoShow: false } });
+    await a.fresh((m) => m.t === 'live' && m.live.autoShow === false);
     assert.ok(a.messages.some((m) => m.t === 'status' && m.status.engine.hitFps > 0), 'status reports hit frames');
     assert.ok(!mic.messages.some((m) => m.t === 'reactive'), 'the audio socket is kept free of show traffic');
 

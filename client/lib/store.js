@@ -22,7 +22,7 @@ export class Store {
     this.rev = 0;
     this.clientId = null;
     this.transport = { playing: false, position: 0, anchor: 0, master: null };
-    this.live = { master: 1, blackout: false, flash: null, scenes: [], calibrate: null, audioReactive: false };
+    this.live = { master: 1, blackout: false, flash: null, scenes: [], calibrate: null, audioReactive: false, autoShow: false };
     // Manual control as the engine last confirmed it, this window's unconfirmed changes on top
     // of it, and the result (what this window shows and evaluates).
     this.programmer = emptyProgrammer();

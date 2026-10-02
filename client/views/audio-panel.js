@@ -1,5 +1,5 @@
 // Live audio panel (Live mode): start the input on the controller computer, watch what it
-// hears in three bands, and choose how the lights react.
+// hears in three bands, run the auto show, and choose how the lights react.
 //
 // Meters come from the engine (every window sees them, phones included); only the computer
 // running the controller can open the microphone or line-in.
@@ -9,6 +9,9 @@ import { fixtureGroups } from '/shared/groups.js';
 import { NAMED_COLORS, hexToRgb, rgbToHex } from '/shared/color.js';
 import { uid } from '/shared/util.js';
 import { liveAudioSupport } from '../lib/live-audio.js';
+import { STYLES, labelName } from '/shared/looks.js';
+import { AUTO_STYLES } from '/shared/show.js';
+import { liveBeat } from '/shared/analysis/live-tracker.js';
 
 const BANDS = [
   ['low', 'Kick', 'Kick drum and bass (below 150 Hz)'],
@@ -67,6 +70,13 @@ export class AudioPanel {
       this.devices = [];
       this.loadDevices();
     }
+    this.autoToggle = h('button', {
+      class: 'btn small',
+      title: 'A whole light show from the music by itself: the generator’s looks, played on the live beat. It takes the timeline’s place while on.',
+      onclick: () => st.setLive({ autoShow: !st.live.autoShow }),
+    });
+    this.beatDots = [0, 1, 2, 3].map(() => h('span', { class: 'beat-dot' }));
+    this.autoStatus = h('span', { class: 'auto-status' });
     this.toggle = h('button', {
       class: 'btn small',
       title: 'When on, the reactions below drive the lights on top of the show',
@@ -118,6 +128,14 @@ export class AudioPanel {
       source,
       h('div', { class: 'meters' }, this.meters.map((m) => m.row)),
       h('div', { class: 'row', style: { fontSize: '12px' } }, h('span', { class: 'muted' }, 'Tempo heard'), this.bpmEl),
+      h('div', { class: 'auto-show' },
+        h('div', { class: 'row wrap', style: { gap: '6px' } },
+          this.autoToggle,
+          select(AUTO_STYLES.map((k) => [k, STYLES[k].label]), show.audioReactive.autoStyle, (v) => st.op({ type: 'reactive.set', changes: { autoStyle: v } }), { 'aria-label': 'Auto show style' }),
+          h('div', { class: 'beat-dots', title: 'The beat the auto show is following' }, this.beatDots),
+        ),
+        this.autoStatus,
+      ),
       h('details', { class: 'reactions', open: this.showReactions, ontoggle: (e) => {
         this.showReactions = e.target.open;
         try {
@@ -150,6 +168,11 @@ export class AudioPanel {
   }
 
   updateToggle() {
+    if (this.autoToggle) {
+      const auto = this.store.live.autoShow;
+      this.autoToggle.classList.toggle('on', auto);
+      this.autoToggle.textContent = auto ? '● Auto show' : 'Auto show: off';
+    }
     if (!this.toggle) return;
     const on = this.store.live.audioReactive;
     this.toggle.classList.toggle('on', on);
@@ -169,6 +192,25 @@ export class AudioPanel {
       m.hit.classList.toggle('on', live && at != null && now - at < 90);
     }
     this.bpmEl.textContent = live && r.bpm ? `${Math.round(r.bpm)} BPM` : live ? 'listening…' : 'no input';
+    this.updateAuto(r?.auto, now);
+  }
+
+  /** What the auto show is following: the part of the song, the tempo, the beat in the bar. */
+  updateAuto(a, now) {
+    if (!this.autoStatus) return;
+    const beat = liveBeat(a, now);
+    const pos = beat == null ? -1 : (((Math.round(beat) - a.barOffset) % 4) + 4) % 4;
+    const near = beat != null && Math.abs(beat - Math.round(beat)) < 0.12;
+    this.beatDots.forEach((d, i) => d.classList.toggle('on', i === pos && near));
+    let text;
+    if (!a || a.section === 'quiet') text = 'Waiting for music.';
+    else if (!a.period) text = 'Listening for a steady kick to find the beat…';
+    else {
+      const name = labelName(a.section);
+      const bar = Math.floor((beat - a.sectionBeat) / 4) % 8 + 1;
+      text = `${name} · ${a.bpm} BPM${a.locked ? '' : ' (holding the tempo)'} · bar ${bar} of 8`;
+    }
+    if (this.autoStatus.textContent !== text) this.autoStatus.textContent = text;
   }
 
   // ---- Reactions -----------------------------------------------------------------------

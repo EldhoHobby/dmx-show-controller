@@ -97,6 +97,7 @@ export class Engine {
     }
     if (s.cleanupScenes(t)) s.broadcast({ t: 'live', live: s.live });
     s.expireAudio(t);
+    s.tickAuto(t);
     const states = this.evaluator.evaluate(pos, s.liveContext(), t);
     for (const u of this.outputs.routedUniverses()) if (!this.universes.has(u)) this.universes.set(u, new Uint8Array(512));
     for (const c of s.clients.values()) if (c.usbUniverse && !this.universes.has(c.usbUniverse)) this.universes.set(c.usbUniverse, new Uint8Array(512));

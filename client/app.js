@@ -251,6 +251,9 @@ function statusChips() {
   if (held) {
     chips.push(h('button', { class: 'badge warn chip-btn', title: `Faders hold ${held} fixture${held === 1 ? '' : 's'}: the show cannot change them until released. Click to release all.`, onclick: () => store.clearProgrammer('all') }, icon('sliders', 12), h('span', { class: 'hide-narrow' }, 'Manual '), `${held} · release`));
   }
+  if (store.live.autoShow) {
+    chips.push(h('button', { class: 'badge ok chip-btn', title: 'The auto show is running the lights from the live audio instead of the timeline. Click to stop it.', onclick: () => store.setLive({ autoShow: false }) }, icon('wand', 12), h('span', { class: 'hide-narrow' }, 'Auto show')));
+  }
   if (store.live.audioReactive) chips.push(h('span', { class: 'badge ok', title: 'Live audio drives the lights (Live › Live audio)' }, icon('mic', 12), h('span', { class: 'hide-narrow' }, 'Audio')));
   return chips;
 }
@@ -450,7 +453,7 @@ store.on('history', refreshTopbar);
 let chipKey = '';
 const updateChips = () => {
   const held = new Set([...Object.keys(store.programmer.attrs), ...Object.keys(store.programmer.raw)]).size;
-  const key = `${!!store.live.calibrate}|${store.live.audioReactive}|${held}`;
+  const key = `${!!store.live.calibrate}|${store.live.audioReactive}|${store.live.autoShow}|${held}`;
   if (key === chipKey) return;
   chipKey = key;
   if (!vizOnly && root.dataset.built) refreshTopbar();

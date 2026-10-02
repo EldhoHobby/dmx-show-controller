@@ -5,6 +5,8 @@
 //
 // Layering rules (like a lighting console):
 //   - tracks are layers, bottom to top; inside a track clips apply in start-time order
+//   - with the live auto show on (Live mode), it takes the timeline's place: the generator's
+//     looks played from the live-audio beat clock (shared/live-show.js)
 //   - intensity is Highest-Takes-Precedence (HTP) unless a clip says "override"
 //   - colour, position, zoom, strobe, gobo and prism are Latest-Takes-Precedence (LTP):
 //     the top-most active clip that sets them wins, crossfading by the clip's fade
@@ -14,7 +16,8 @@
 //     also silences manual raw channel values that carry intensity (see dmx-render.js)
 
 import { createTempo } from './tempo.js';
-import { panRange, profileCaps, resolveProfile, tiltRange } from './fixture-library.js';
+import { fixtureRole, panRange, profileCaps, resolveProfile, tiltRange } from './fixture-library.js';
+import { livePlan } from './live-show.js';
 import { aimAt, rotationMatrix } from './kinematics.js';
 import { hsvToRgb, isColor } from './color.js';
 import { fixtureGroups } from './groups.js';
@@ -25,6 +28,7 @@ export function defaultState() {
 }
 
 const num = (v, fallback = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+const WHITE = [1, 1, 1];
 const posNum = (v, fallback) => (typeof v === 'number' && v > 0 ? v : fallback);
 
 function fadeAlpha(clip, t) {
@@ -539,6 +543,88 @@ export function createEvaluator(show) {
   const groups = new Map(fixtureGroups(show).map((g) => [g.key, g.fixtures]));
   const mappings = show.audioReactive?.mappings || [];
 
+  // ---- Live auto show: the generator's fixture roles, prepared looks cached by plan ----
+  const roleOf = (rec) => fixtureRole(rec.profile);
+  const ids = (list) => list.map((r) => r.id);
+  const liveMovers = ids(fixtures.filter((r) => roleOf(r) === 'mover'));
+  const liveStrobes = ids(fixtures.filter((r) => roleOf(r) === 'strobe'));
+  const washRecs = fixtures.filter((r) => roleOf(r) === 'wash' || roleOf(r) === 'dimmer');
+  const liveWashes = ids(washRecs);
+  const liveTargets = {
+    base: [...liveMovers, ...liveWashes],
+    rhythm: liveWashes,
+    // Every other wash in stage order, for the off-beat hi-hat flicks.
+    sparkle: ids(washRecs.slice().sort((a, b) => a.fixture.position.x - b.fixture.position.x).filter((_, i) => i % 2 === 1)),
+    beams: liveMovers,
+    backbeat: liveMovers.length ? liveMovers : liveStrobes,
+    move: liveMovers,
+    color: ids(fixtures.filter((r) => r.caps.color && roleOf(r) !== 'strobe')),
+  };
+  const liveStyle = show.audioReactive?.autoStyle || 'balanced';
+  const liveSeed = stringHash(show.meta?.name || 'show') % 6;
+  const liveCache = new Map();
+  const livePrepared = (key, make) => {
+    let v = liveCache.get(key);
+    if (!v) {
+      v = make();
+      liveCache.set(key, v);
+      if (liveCache.size > 64) liveCache.delete(liveCache.keys().next().value);
+    }
+    return v;
+  };
+  const virtualClip = (name, type, params, targets) => prepareClip({ id: `auto-${name}`, type, params, fixtures: targets, start: 0, end: Infinity, fadeIn: 0, fadeOut: 0 }, byId);
+
+  /** A pulse fired by the real drum hit in a band, decaying over decayMs. */
+  function hitPulse(pc, rt, band, decayMs, alpha, states, now) {
+    const env = onsetEnvelope(rt, band, decayMs, now);
+    if (env <= 0) return;
+    const level = num(pc.clip.params.level, 1);
+    for (const { rec } of pc.members) setDimmer(states.get(rec.id), level * env, alpha, 'htp');
+  }
+
+  function applyLiveShow(states, auto, rt, now) {
+    const plan = livePlan(auto, { style: liveStyle, seed: liveSeed }, now);
+    const L = livePrepared(plan.key, () => {
+      const out = {};
+      for (const [name, layer] of Object.entries(plan.look)) {
+        if (layer && liveTargets[name]?.length) out[name] = virtualClip(name, layer.type, layer.params, liveTargets[name]);
+      }
+      return out;
+    });
+    const a = plan.alpha;
+    const run = (pc) => pc && HANDLERS[pc.clip.type](pc, now, plan.beat, a, states);
+    run(L.base);
+    if (plan.build) {
+      for (const id of liveTargets.base) setDimmer(states.get(id), plan.build.level, a, 'htp');
+      const step = plan.build.step;
+      run(livePrepared(`build|${step}`, () => virtualClip('build', 'chase', { step, direction: 'forward', width: step <= 0.25 ? 2 : 1, tail: step <= 0.25 ? 0 : 1, level: 0.9, order: step <= 0.25 ? 'center' : 'x', dimmerMode: 'htp' }, liveWashes)));
+    } else if (L.rhythm) {
+      if (plan.kickPulse) hitPulse(L.rhythm, rt, 'low', num(L.rhythm.clip.params.decay, 0.6) * plan.beatMs, a, states, now);
+      else run(L.rhythm);
+    }
+    if (L.sparkle) hitPulse(L.sparkle, rt, 'high', 0.25 * plan.beatMs, a, states, now);
+    run(L.beams);
+    if (L.backbeat) hitPulse(L.backbeat, rt, 'mid', 0.35 * plan.beatMs, a, states, now);
+    run(L.move);
+    run(L.color);
+    // The drop hit (and a softer one when the kick comes back): full white, fading out.
+    const flash = Math.max(plan.dropHit, plan.kickBack);
+    if (flash > 0) {
+      for (const id of liveTargets.base) {
+        const st = states.get(id);
+        setDimmer(st, flash, 1, 'htp');
+        setColor(st, WHITE, flash);
+      }
+    }
+    if (plan.dropStrobe || plan.build?.strobe) {
+      for (const id of liveStrobes) {
+        const st = states.get(id);
+        st.strobe = plan.dropStrobe ? 0.85 : 0.6;
+        setDimmer(st, 1, 1, 'htp');
+      }
+    }
+  }
+
   /**
    * @param t     show position in ms
    * @param live  live state: master, blackout, flash, scenes, calibrate, audioReactive,
@@ -548,15 +634,19 @@ export function createEvaluator(show) {
   function evaluate(t, live, now = t) {
     const states = new Map();
     for (const rec of fixtures) states.set(rec.id, defaultState());
-    const beat = tempo.musicalBeat(t);
-    for (const pc of prepared) {
-      const c = pc.clip;
-      if (t < c.start || t >= c.end) continue;
-      const alpha = fadeAlpha(c, t);
-      if (alpha <= 0) continue;
-      HANDLERS[c.type](pc, t, beat, alpha, states);
-    }
     const ctx = live || {};
+    if (ctx.autoShow) {
+      applyLiveShow(states, ctx.reactive?.auto, ctx.reactive, now);
+    } else {
+      const beat = tempo.musicalBeat(t);
+      for (const pc of prepared) {
+        const c = pc.clip;
+        if (t < c.start || t >= c.end) continue;
+        const alpha = fadeAlpha(c, t);
+        if (alpha <= 0) continue;
+        HANDLERS[c.type](pc, t, beat, alpha, states);
+      }
+    }
     for (const entry of ctx.scenes || []) {
       const scene = scenesById.get(entry.id);
       if (!scene) continue;

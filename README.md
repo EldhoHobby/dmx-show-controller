@@ -48,7 +48,7 @@ The app has two modes: **Edit** (build the show) and **Live** (run it).
 | --- | --- | --- |
 | 1 | Edit › Patch | Add fixtures and give them DMX addresses. Drag them into place on the **stage layout** (top, front and side views; drag the dot on a beam line to aim a fixture), or drag them to new addresses on the **DMX address grid**. Similar fixtures are **grouped automatically**. Import exact fixture files from [Open Fixture Library](https://open-fixture-library.org) (download as *OFL JSON*). |
 | 2 | Edit › Calibrate | Moving heads only. Set the **centre point**, **Prime** all heads onto it, and nudge each one until its beam lands on the mark. The offsets are saved and applied to every cue and generated design. |
-| 3 | Edit › Song | Drop in an MP3/WAV/AAC/FLAC. The app detects BPM, beats, bars, sections and drops. Correct the grid if needed (Tap, ×2/÷2, nudge, bar start), fix section labels, then **Generate show**. |
+| 3 | Edit › Song | Drop in an MP3/WAV/AAC/FLAC. The app detects BPM, beats, bars, sections, drops and the drum pattern. Correct the grid if needed (Tap, ×2/÷2, nudge, bar start), fix section labels, then **Generate show**: it pulses on the real kick drum, flicks on the hi-hats, flares on the snares, changes looks every 8 bars and builds up into each drop. |
 | 4 | Edit › Timeline | Edit the generated clips: move, resize, copy, change effects, keyframes. Everything snaps to the beat. |
 | 5 | Edit › Control | **Group faders** (intensity, colour, pan, tilt, zoom, strobe, gobo) and, for one fixture, a pan/tilt pad plus a fader for **every DMX channel** with the value going out right now. Record what the faders hold as **scenes**. |
 | 6 | Edit › Outputs | Choose sACN / Art-Net / USB and the network adapter. One click sets up a DMX-AN2. |
@@ -98,11 +98,33 @@ level, or bring in a scene, for any group).
   refresh): the light follows the sound by about 15–40 ms, which is less than sound takes to
   travel 10 m across a room.
 
+### Auto show
+
+Turn on **Auto show** in the Live audio card and the lights run a whole show from the music by
+themselves: the same looks the generator uses for a song file, played on a beat clock that locks
+onto the kick drum. It recognises grooves, breakdowns, build-ups (a snare roll) and drops, changes
+the look every 8 bars, gives every drop a new palette, and hits each drop with a white flash and
+the strobes. Kick pulses, snare flares and hi-hat flicks fire on the drums themselves; chases,
+colours and movement run on the beat clock, so they keep time through breakdowns too. Pick
+*Calm*, *Balanced* or *Energetic* next to the switch.
+
+- It takes the timeline's place while it is on. Scenes, faders and *Lights react* still work on
+  top, and the top bar shows an **Auto show** chip (click it to stop).
+- The status line shows what it is following, for example "Drop · 128 BPM · bar 3 of 8", and four
+  dots blink on the beat.
+- It needs a steady kick to find the beat, as most dance music has. A drop is the kick coming
+  back after a build-up or after a one- or two-bar gap. When the kick returns after a long
+  breakdown with no build-up, it is treated as the groove coming back (with a softer flash):
+  that cannot be told apart from the start of a build-up as it happens, and a false drop is worse
+  than a missed one.
+
 How it works, for developers: `shared/analysis/live-detector.js` (band filters, onset rules,
 tempo) runs in an AudioWorklet on the browser's real-time audio thread; hits go through a
 MessagePort to a worker with its own WebSocket, and the engine sends a DMX frame the moment a
 hit arrives instead of waiting for its next 25 ms tick. The page's UI thread is never on that
-path. The full algorithm notes are in the build brief.
+path. The engine runs `shared/analysis/live-tracker.js` on every hit (beat clock, bars, song part)
+and broadcasts its state; `shared/live-show.js` turns that into looks from `shared/looks.js`, the
+same module the song-file generator uses. The full algorithm notes are in the build brief.
 
 ## Design decisions (changes from the original specification)
 

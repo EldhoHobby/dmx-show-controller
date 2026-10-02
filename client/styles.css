@@ -382,3 +382,10 @@ button.badge.chip-btn:hover { filter: brightness(1.25); }
 @media (max-width: 860px) {
   .live-main, .live-side { min-height: auto; }
 }
+
+/* ---- Live auto show ---------------------------------------------------------------- */
+.auto-show { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--radius); background: var(--panel-2); }
+.auto-status { font-size: 12px; color: var(--muted); }
+.beat-dots { display: inline-flex; gap: 4px; margin-left: auto; }
+.beat-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--panel-3); }
+.beat-dot.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }

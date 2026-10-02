@@ -154,7 +154,9 @@ export class SongView {
       { class: 'card' },
       h('h2', {}, 'Generate the show'),
       h('p', { class: 'muted', style: { margin: '0 0 10px' } },
-        `Builds a complete first draft from the ${show.analysis.sections.length} sections and your ${show.fixtures.length} fixtures: base looks, beat chases, movement, colour effects and drop hits on five tracks. Every clip can be edited afterwards.`),
+        `Builds a complete first draft from the ${show.analysis.sections.length} sections and your ${show.fixtures.length} fixtures: looks that follow the drums (kick pulses, hi-hat flicks, snare flares), chases, movement, colour, fills and drop hits, changing every 8 bars. Every clip can be edited afterwards.`),
+      show.analysis.drums ? null : h('div', { class: 'note warn', style: { marginBottom: '10px' } },
+        'This song was analysed before drum detection, so the show would use simpler rhythms by section. Load the song and press Re-analyse to let the generator follow the drums (section labels you corrected will need correcting again).'),
       h('div', { class: 'row wrap' },
         h('span', { class: 'muted' }, 'Style'),
         select(Object.entries(STYLES).map(([k, s]) => [k, s.label]), this.style, (v) => {

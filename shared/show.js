@@ -165,9 +165,13 @@ export const REACTIVE_BANDS = ['low', 'mid', 'high'];
 export const REACTIVE_ACTIONS = ['pulse', 'flash', 'strobe', 'colorStep', 'follow', 'scene'];
 
 /** Kick pumps the washes, the mid band (snare, vocals) steps their colour, hi-hats flick the movers. */
+/** Looks the live auto show can play (see shared/looks.js STYLES). */
+export const AUTO_STYLES = ['calm', 'balanced', 'energetic'];
+
 export function defaultReactive() {
   return {
     sensitivity: { low: 1, mid: 1, high: 1 },
+    autoStyle: 'balanced',
     mappings: [
       { id: 'map_kick', band: 'low', action: 'pulse', target: 'role:wash', amount: 1, decayMs: 260, sceneId: '', colors: [] },
       {
@@ -207,6 +211,7 @@ export function normalizeReactive(r) {
   const s = (v) => clampTo(num(v, 1), 0.2, 3);
   return {
     sensitivity: { low: s(sens.low), mid: s(sens.mid), high: s(sens.high) },
+    autoStyle: AUTO_STYLES.includes(r.autoStyle) ? r.autoStyle : 'balanced',
     mappings: dedupe((Array.isArray(r.mappings) ? r.mappings : []).map(normalizeMapping).filter(Boolean)).slice(0, 32),
   };
 }

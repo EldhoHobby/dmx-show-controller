@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { randomBytes } from 'node:crypto';
 import { createShow, normalizeShow, REACTIVE_BANDS } from '../shared/show.js';
 import { applyProgrammer, emptyProgrammer } from '../shared/programmer.js';
+import { createLiveTracker } from '../shared/analysis/live-tracker.js';
 import { applyOp, isNoop } from '../shared/ops.js';
 
 /** Monotonic milliseconds on the Unix epoch scale; the engine's single time base. */
@@ -25,6 +26,8 @@ function emptyReactive() {
     bpm: 0,
     source: null,
     at: 0,
+    // Live beat clock and song part for the auto show (shared/analysis/live-tracker.js).
+    auto: null,
   };
 }
 
@@ -38,12 +41,14 @@ export class Session {
     this.transport = { playing: false, position: 0, anchor: now(), master: null };
     // scenes: active scenes [{ id, at, releasedAt }]; calibrate: Prime/Calibrate output or null;
     // audioReactive: whether live audio drives the lights.
-    this.live = { master: 1, blackout: false, flash: null, scenes: [], calibrate: null, audioReactive: false };
+    // autoShow: the live auto show replaces the timeline, following the live input.
+    this.live = { master: 1, blackout: false, flash: null, scenes: [], calibrate: null, audioReactive: false, autoShow: false };
     this.flashOwner = null;
     // Manual faders (the "programmer"): fixture attributes and raw channel values that
     // override the show on the real lights until cleared. Live state, not saved in the show.
     this.programmer = emptyProgrammer();
     this.reactive = emptyReactive();
+    this.tracker = createLiveTracker();
     this.reactiveDirty = false;
     this.clients = new Map();
     this.saveTimer = null;
@@ -191,6 +196,7 @@ export class Session {
       }
     }
     if (typeof c.audioReactive === 'boolean') this.live.audioReactive = c.audioReactive;
+    if (typeof c.autoShow === 'boolean') this.live.autoShow = c.autoShow;
     this.broadcast({ t: 'live', live: this.live });
   }
 
@@ -268,18 +274,35 @@ export class Session {
         r.last[band] = t;
         r.strength[band] = finite(e[1]) ? clamp(e[1], 0, 1) : 1;
         r.count[band] = (r.count[band] + 1) % 1e9;
+        this.tracker.hit(e[0], t);
         hit = true;
       }
     }
     if (Array.isArray(msg.lv) && msg.lv.length >= 4) {
       const [low, mid, high, energy] = msg.lv.map((v) => (finite(v) ? clamp(v, 0, 1) : 0));
       r.env = { low, mid, high, energy };
+      this.tracker.levels(msg.lv, t);
     }
     if (finite(msg.bpm)) r.bpm = clamp(msg.bpm, 0, 300);
     r.source = client.id;
     r.at = t;
+    if (hit) {
+      this.tracker.update(t);
+      r.auto = this.tracker.snapshot(t);
+    }
     this.reactiveDirty = true;
-    if (hit && this.live.audioReactive && this.onAudioHit) this.onAudioHit(t);
+    if (hit && (this.live.audioReactive || this.live.autoShow) && this.onAudioHit) this.onAudioHit(t);
+  }
+
+  /**
+   * Called every frame: the song part can change with no hit at all (the kick stops, the
+   * input goes quiet), so the tracker is advanced here too.
+   */
+  tickAuto(t = now()) {
+    if (this.tracker.update(t) || (this.reactive.auto && this.reactive.auto.section !== this.tracker.section)) {
+      this.reactive.auto = this.tracker.snapshot(t);
+      this.reactiveDirty = true;
+    }
   }
 
   /** The input went quiet (window closed, device unplugged): levels to zero, once. */
