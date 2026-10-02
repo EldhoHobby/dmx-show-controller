@@ -1,0 +1,14 @@
+# Machine-specific state: cached song audio, the working autosave, venue output settings
+# (including this installation's sACN source id).
+media/
+shows/autosave*.json
+shows/*.tmp
+config/outputs.json
+config/*.tmp
+node_modules/
+
+# Generated: start.bat (or `node tools/make-demo-audio.js`) recreates the demo track.
+samples/*.wav
+
+# Local editor and assistant settings.
+.claude/

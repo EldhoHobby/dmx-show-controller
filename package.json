@@ -1,0 +1,17 @@
+{
+  "name": "dmx-show-controller",
+  "version": "0.2.0",
+  "description": "Browser-based DMX lighting show designer and player with sACN / Art-Net output",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "start:lan": "node server/index.js --host 0.0.0.0",
+    "test": "node --test \"test/**/*.test.js\"",
+    "demo-audio": "node tools/make-demo-audio.js"
+  },
+  "license": "UNLICENSED"
+}
