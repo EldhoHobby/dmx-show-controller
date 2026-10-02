@@ -11,12 +11,12 @@
 // Fixtures given a roll (rotation Z) in the inspector can be moved here but not aimed.
 
 import { h, mount, fitCanvas } from '../lib/dom.js';
-import { resolveProfile, profileCaps, fixtureRole } from '/shared/fixture-library.js';
+import { resolveProfile, profileCaps, fixtureRole, cellOffsets } from '/shared/fixture-library.js';
 import { rotationMatrix } from '/shared/kinematics.js';
 
 const D2R = Math.PI / 180;
 const R2D = 180 / Math.PI;
-export const ROLE_COLORS = { mover: '#f5a524', wash: '#4f9dff', strobe: '#e7eaf0', dimmer: '#b48cff' };
+export const ROLE_COLORS = { mover: '#f5a524', wash: '#4f9dff', strobe: '#e7eaf0', dimmer: '#b48cff', pixel: '#34c98b' };
 
 const VIEWS = {
   top: { label: 'Top', h: 'x', v: 'z', up: false, hint: 'from above · audience at the bottom' },
@@ -232,6 +232,14 @@ export class LayoutEditor {
       const role = profile ? fixtureRole(profile) : 'dimmer';
       const [x, y] = this.toScreen(f.position);
       const rec = { id: f.id, f, caps, role, x, y, sel: selected.has(f.id) };
+      if (caps.cells) {
+        // A pixel bar: its two ends, along the fixture's own X axis.
+        const xs = cellOffsets(profile).map((o) => o[0]);
+        const half = (Math.max(...xs) - Math.min(...xs)) / 2 + 0.06;
+        const m = rotationMatrix(f.rotation);
+        const end = (k) => this.toScreen({ x: f.position.x + m[0] * half * k, y: f.position.y + m[3] * half * k, z: f.position.z + m[6] * half * k });
+        rec.bar = [end(-1), end(1)];
+      }
       rec.arrow = this.arrowFor(f, rec);
       items.push(rec);
     }
@@ -273,6 +281,16 @@ export class LayoutEditor {
         ctx.beginPath();
         ctx.arc(r.x, r.y, 13, 0, Math.PI * 2);
         ctx.stroke();
+      }
+      if (r.bar) {
+        ctx.strokeStyle = r.sel ? color : `${color}aa`;
+        ctx.lineWidth = 5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(r.bar[0][0], r.bar[0][1]);
+        ctx.lineTo(r.bar[1][0], r.bar[1][1]);
+        ctx.stroke();
+        ctx.lineCap = 'butt';
       }
       // Body.
       ctx.fillStyle = r.sel ? color : '#2a313d';

@@ -4,6 +4,9 @@
 // same code at screen refresh rate to drive the 3D visualizer, so what you see is what is sent.
 //
 // Layering rules (like a lighting console):
+//   - pixel fixtures (bars, panels) are evaluated cell by cell: a clip on the fixture plays
+//     across its cells as if each were a light, in stage order; scenes, faders and reactions
+//     on the fixture reach every cell
 //   - tracks are layers, bottom to top; inside a track clips apply in start-time order
 //   - with the live auto show on (Live mode), it takes the timeline's place: the generator's
 //     looks played from the live-audio beat clock (shared/live-show.js)
@@ -16,7 +19,7 @@
 //     also silences manual raw channel values that carry intensity (see dmx-render.js)
 
 import { createTempo } from './tempo.js';
-import { fixtureRole, panRange, profileCaps, resolveProfile, tiltRange } from './fixture-library.js';
+import { cellOffsets, fixtureRole, panRange, profileCaps, resolveProfile, tiltRange } from './fixture-library.js';
 import { livePlan } from './live-show.js';
 import { aimAt, rotationMatrix } from './kinematics.js';
 import { hsvToRgb, isColor } from './color.js';
@@ -104,7 +107,8 @@ function prepareKeys(keys) {
 }
 
 function prepareClip(clip, byId) {
-  const members = clip.fixtures.map((id) => byId.get(id)).filter(Boolean);
+  // A pixel fixture takes part cell by cell, so effects run across its pixels.
+  const members = clip.fixtures.map((id) => byId.get(id)).filter(Boolean).flatMap((rec) => rec.cells || [rec]);
   const order = clip.params?.order || 'x';
   const ordered = members.slice();
   if (order === 'x') {
@@ -338,11 +342,13 @@ export function onsetEnvelope(rt, band, decayMs, now) {
   return (rt.strength?.[band] ?? 1) * (1 - since / decayMs) ** 2;
 }
 
-function applyReactive(states, mappings, groups, scenesById, rt, now) {
+function applyReactive(states, mappings, groups, scenesById, rt, now, expand) {
   const each = (ids, fn) => {
     for (const id of ids) {
-      const s = states.get(id);
-      if (s) fn(s);
+      for (const sid of expand(id)) {
+        const s = states.get(sid);
+        if (s) fn(s);
+      }
     }
   };
   for (const m of mappings) {
@@ -380,10 +386,7 @@ function applyReactive(states, mappings, groups, scenesById, rt, now) {
       case 'scene': {
         const scene = scenesById.get(m.sceneId);
         if (scene && env > 0) {
-          for (const fx in scene.attrs) {
-            const s = states.get(fx);
-            if (s) applyAttrs(s, scene.attrs[fx], env * m.amount);
-          }
+          for (const fx in scene.attrs) each([fx], (s) => applyAttrs(s, scene.attrs[fx], env * m.amount));
         }
         break;
       }
@@ -416,73 +419,90 @@ function collectRaw(activeScenes, scenesById, programmer, now) {
 function rawToStates(states, raw, byId) {
   for (const [fx, chans] of raw) {
     const rec = byId.get(fx);
-    const s = states.get(fx);
-    if (!rec || !s) continue;
-    const channels = rec.profile.channels;
-    let color = null;
-    const pos = {};
+    if (!rec || !states.get(fx)) continue;
+    // Channels of a pixel fixture's cells land in that cell's state.
+    const byTarget = new Map();
     for (const [i, v] of chans) {
-      const ch = channels[i];
+      const ch = rec.profile.channels[i];
       if (!ch) continue;
-      const lo = ch.min ?? 0;
-      const hi = ch.max ?? 255;
-      const lin = hi > lo ? clamp((v - lo) / (hi - lo), 0, 1) : 0;
-      const n = ch.invert ? 1 - lin : lin;
-      switch (ch.attr) {
-        case 'dimmer':
-          s.dimmer = n;
-          break;
-        case 'red':
-          (color ||= [...s.color])[0] = n;
-          break;
-        case 'green':
-          (color ||= [...s.color])[1] = n;
-          break;
-        case 'blue':
-          (color ||= [...s.color])[2] = n;
-          break;
-        case 'zoom':
-          s.zoom = n;
-          break;
-        case 'strobe': {
-          const sMin = ch.min ?? 1;
-          s.strobe = v === (ch.off ?? 0) ? 0 : clamp((v - sMin) / ((ch.max ?? 255) - sMin || 1), 0, 1);
-          break;
-        }
-        case 'pan':
-        case 'tilt':
-          (pos[ch.attr] ||= {})[ch.fine ? 'fine' : 'coarse'] = v;
-          break;
-        default:
-          break;
-      }
+      const id = Number.isInteger(ch.cell) && rec.cells ? `${fx}#${ch.cell}` : fx;
+      if (!byTarget.has(id)) byTarget.set(id, []);
+      byTarget.get(id).push([i, v]);
     }
-    if (color) {
-      if (rec.caps.dimmer) s.color = color;
-      else {
-        const m = Math.max(...color);
-        s.dimmer = m;
-        if (m > 0) s.color = color.map((c) => c / m);
-      }
-    }
-    for (const attr of ['pan', 'tilt']) {
-      const p = pos[attr];
-      if (!p) continue;
-      const range = attr === 'pan' ? panRange(rec.profile) : tiltRange(rec.profile);
-      let v;
-      if (rec.fineAttrs.has(attr)) {
-        const cur = Math.round(clamp((s[attr] + range / 2) / range, 0, 1) * 65535);
-        v = ((p.coarse ?? cur >> 8) * 256 + (p.fine ?? (cur & 255))) / 65535;
-      } else {
-        v = (p.coarse ?? 0) / 255;
-      }
-      s[attr] = v * range - range / 2;
+    for (const [id, list] of byTarget) {
+      const s = states.get(id);
+      if (s) rawIntoState(rec, s, list, id !== fx);
     }
   }
 }
 
+/** Raw channel values of one fixture (or one cell of a pixel fixture) into its state. */
+function rawIntoState(rec, s, chans, isCell) {
+  const channels = rec.profile.channels;
+  const ownDimmer = isCell ? false : rec.caps.dimmer;
+  let color = null;
+  const pos = {};
+  for (const [i, v] of chans) {
+    const ch = channels[i];
+    if (!ch) continue;
+    const lo = ch.min ?? 0;
+    const hi = ch.max ?? 255;
+    const lin = hi > lo ? clamp((v - lo) / (hi - lo), 0, 1) : 0;
+    const n = ch.invert ? 1 - lin : lin;
+    switch (ch.attr) {
+      case 'dimmer':
+        s.dimmer = n;
+        break;
+      case 'red':
+        (color ||= [...s.color])[0] = n;
+        break;
+      case 'green':
+        (color ||= [...s.color])[1] = n;
+        break;
+      case 'blue':
+        (color ||= [...s.color])[2] = n;
+        break;
+      case 'zoom':
+        s.zoom = n;
+        break;
+      case 'strobe': {
+        const sMin = ch.min ?? 1;
+        s.strobe = v === (ch.off ?? 0) ? 0 : clamp((v - sMin) / ((ch.max ?? 255) - sMin || 1), 0, 1);
+        break;
+      }
+      case 'pan':
+      case 'tilt':
+        (pos[ch.attr] ||= {})[ch.fine ? 'fine' : 'coarse'] = v;
+        break;
+      default:
+        break;
+    }
+  }
+  if (color) {
+    if (ownDimmer) s.color = color;
+    else {
+      const m = Math.max(...color);
+      s.dimmer = m;
+      if (m > 0) s.color = color.map((c) => c / m);
+    }
+  }
+  for (const attr of ['pan', 'tilt']) {
+    const p = pos[attr];
+    if (!p) continue;
+    const range = attr === 'pan' ? panRange(rec.profile) : tiltRange(rec.profile);
+    let v;
+    if (rec.fineAttrs.has(attr)) {
+      const cur = Math.round(clamp((s[attr] + range / 2) / range, 0, 1) * 65535);
+      v = ((p.coarse ?? cur >> 8) * 256 + (p.fine ?? (cur & 255))) / 65535;
+    } else {
+      v = (p.coarse ?? 0) / 255;
+    }
+    s[attr] = v * range - range / 2;
+  }
+}
+
 /** Prime/Calibrate: an open white beam at the (calibrated) aim point; others off if asked. */
-function applyCalibration(states, cal, fixtures) {
+function applyCalibration(states, cal, fixtures, expand) {
   const targets = new Set();
   if (!cal) return targets;
   for (const rec of fixtures) if (rec.caps.panTilt && (cal.all || rec.id === cal.fixtureId)) targets.add(rec.id);
@@ -498,7 +518,7 @@ function applyCalibration(states, cal, fixtures) {
       s.pan = rec.aim.pan;
       s.tilt = rec.aim.tilt;
     } else if (cal.othersOff !== false) {
-      s.dimmer = 0;
+      for (const id of expand(rec.id)) states.get(id).dimmer = 0;
     }
   }
   return targets;
@@ -532,7 +552,27 @@ export function createEvaluator(show) {
         : null,
     });
   }
-  const byId = new Map(fixtures.map((x) => [x.id, x]));
+  // Pixel fixtures: a record per cell, placed along the fixture by its own rotation.
+  const cells = [];
+  for (const rec of fixtures) {
+    if (!rec.caps.cells) continue;
+    const m = rec.matrix;
+    const p = rec.fixture.position;
+    rec.cells = cellOffsets(rec.profile).map(([ox, oz], i) => ({
+      ...rec,
+      id: `${rec.id}#${i}`,
+      parentId: rec.id,
+      cell: i,
+      cells: undefined,
+      aim: null,
+      fixture: { ...rec.fixture, position: { x: p.x + m[0] * ox + m[2] * oz, y: p.y + m[3] * ox + m[5] * oz, z: p.z + m[6] * ox + m[8] * oz } },
+    }));
+    cells.push(...rec.cells);
+  }
+  const byId = new Map([...fixtures, ...cells].map((x) => [x.id, x]));
+  const statesOf = new Map(fixtures.map((r) => [r.id, r.cells ? [r.id, ...r.cells.map((c) => c.id)] : [r.id]]));
+  /** A fixture id and, for a pixel fixture, the ids of all its cells. */
+  const expand = (id) => statesOf.get(id) || [id];
   const trackOrder = new Map(show.timeline.tracks.map((tr, i) => [tr.id, i]));
   const muted = new Set(show.timeline.tracks.filter((tr) => tr.muted).map((tr) => tr.id));
   const prepared = show.timeline.clips
@@ -548,7 +588,7 @@ export function createEvaluator(show) {
   const ids = (list) => list.map((r) => r.id);
   const liveMovers = ids(fixtures.filter((r) => roleOf(r) === 'mover'));
   const liveStrobes = ids(fixtures.filter((r) => roleOf(r) === 'strobe'));
-  const washRecs = fixtures.filter((r) => roleOf(r) === 'wash' || roleOf(r) === 'dimmer');
+  const washRecs = fixtures.filter((r) => ['wash', 'dimmer', 'pixel'].includes(roleOf(r)));
   const liveWashes = ids(washRecs);
   const liveTargets = {
     base: [...liveMovers, ...liveWashes],
@@ -595,7 +635,7 @@ export function createEvaluator(show) {
     const run = (pc) => pc && HANDLERS[pc.clip.type](pc, now, plan.beat, a, states);
     run(L.base);
     if (plan.build) {
-      for (const id of liveTargets.base) setDimmer(states.get(id), plan.build.level, a, 'htp');
+      for (const id of liveTargets.base) for (const sid of expand(id)) setDimmer(states.get(sid), plan.build.level, a, 'htp');
       const step = plan.build.step;
       run(livePrepared(`build|${step}`, () => virtualClip('build', 'chase', { step, direction: 'forward', width: step <= 0.25 ? 2 : 1, tail: step <= 0.25 ? 0 : 1, level: 0.9, order: step <= 0.25 ? 'center' : 'x', dimmerMode: 'htp' }, liveWashes)));
     } else if (L.rhythm) {
@@ -611,9 +651,11 @@ export function createEvaluator(show) {
     const flash = Math.max(plan.dropHit, plan.kickBack);
     if (flash > 0) {
       for (const id of liveTargets.base) {
-        const st = states.get(id);
-        setDimmer(st, flash, 1, 'htp');
-        setColor(st, WHITE, flash);
+        for (const sid of expand(id)) {
+          const st = states.get(sid);
+          setDimmer(st, flash, 1, 'htp');
+          setColor(st, WHITE, flash);
+        }
       }
     }
     if (plan.dropStrobe || plan.build?.strobe) {
@@ -634,6 +676,7 @@ export function createEvaluator(show) {
   function evaluate(t, live, now = t) {
     const states = new Map();
     for (const rec of fixtures) states.set(rec.id, defaultState());
+    for (const c of cells) states.set(c.id, defaultState());
     const ctx = live || {};
     if (ctx.autoShow) {
       applyLiveShow(states, ctx.reactive?.auto, ctx.reactive, now);
@@ -653,20 +696,24 @@ export function createEvaluator(show) {
       const a = sceneAlpha(scene, entry, now);
       if (a <= 0) continue;
       for (const fx in scene.attrs) {
-        const s = states.get(fx);
-        if (s) applyAttrs(s, scene.attrs[fx], a);
+        for (const id of expand(fx)) {
+          const s = states.get(id);
+          if (s) applyAttrs(s, scene.attrs[fx], a);
+        }
       }
     }
-    if (ctx.audioReactive && ctx.reactive) applyReactive(states, mappings, groups, scenesById, ctx.reactive, now);
+    if (ctx.audioReactive && ctx.reactive) applyReactive(states, mappings, groups, scenesById, ctx.reactive, now, expand);
     if (ctx.programmer?.attrs) {
       for (const fx in ctx.programmer.attrs) {
-        const s = states.get(fx);
-        if (s) applyAttrs(s, ctx.programmer.attrs[fx], 1);
+        for (const id of expand(fx)) {
+          const s = states.get(id);
+          if (s) applyAttrs(s, ctx.programmer.attrs[fx], 1);
+        }
       }
     }
     const raw = ctx.calibrate ? new Map() : collectRaw(ctx.scenes, scenesById, ctx.programmer, now);
     if (raw.size) rawToStates(states, raw, byId);
-    applyCalibration(states, ctx.calibrate, fixtures);
+    applyCalibration(states, ctx.calibrate, fixtures, expand);
     applyLive(states, live);
     states.raw = raw;
     states.intensity = ctx.blackout ? 0 : clamp(num(ctx.master, 1), 0, 1);

@@ -13,6 +13,7 @@ export const ROLE_NAMES = {
   wash: 'Colour washes',
   strobe: 'Strobes',
   dimmer: 'Dimmers',
+  pixel: 'Pixel bars',
 };
 
 function mergeCaps(members) {

@@ -3,7 +3,7 @@
 import { h, mount, select, numberInput, textInput, icon } from '../lib/dom.js';
 import { CLIP_TYPES, KEYFRAME_PARAMS, EASINGS, defaultParams } from '/shared/clip-types.js';
 import { createTempo } from '/shared/tempo.js';
-import { footprint, profileCaps, resolveProfile } from '/shared/fixture-library.js';
+import { channelName, footprint, profileCaps, resolveProfile } from '/shared/fixture-library.js';
 import { hexToRgb, rgbToHex } from '/shared/color.js';
 import { formatTime } from '/shared/util.js';
 import { fixtureGroups } from '/shared/groups.js';
@@ -281,7 +281,7 @@ export class Inspector {
         h('h3', {}, `DMX channels ${f.address}–${f.address + footprint(profile) - 1} (universe ${f.universe})`),
         h('table', { class: 'grid' }, h('tbody', {}, profile.channels.map((ch, i) => h('tr', {},
           h('td', { class: 'mono muted' }, String(f.address + i)),
-          h('td', {}, ch.label || ch.attr),
+          h('td', {}, channelName(ch)),
           h('td', { class: 'muted' }, ch.attr === 'fixed' ? `fixed at ${ch.value}` : ch.fine ? `${ch.attr} (fine)` : ch.attr),
         )))),
       ) : null,

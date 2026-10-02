@@ -12,6 +12,13 @@
 //   invert   reverse the range
 //   value    constant DMX value for 'fixed' channels
 //   slots    [{ name, dmx, color? }] for colour wheels and gobo wheels
+//   cell     pixel fixtures only: which cell (0, 1, 2...) the channel belongs to; channels
+//            without a cell (master dimmer, strobe, modes) act on the whole fixture
+//
+// Pixel fixtures (bars, tubes, panels) also give
+//   cellGrid [columns, rows] of their cells (default: one row), left to right, then rows
+//   length   width of the fixture in metres along its cells (default 0.125 m per cell)
+// Each cell is then lit as a light of its own: a chase or a rainbow runs across the pixels.
 //
 // The built-in profiles are deliberately generic. Real fixtures should be imported from
 // Open Fixture Library files (see ofl-import.js) so their channel layouts are exact.
@@ -142,6 +149,19 @@ export const BUILTIN_PROFILES = [
   },
 ];
 
+/** A pixel bar: master dimmer and strobe (optional), then red, green, blue for each cell. */
+function pixelBar(id, name, cells, { master = true, length = 1 } = {}) {
+  const channels = master ? [{ attr: 'dimmer', label: 'Master dimmer' }, { attr: 'strobe', off: 0, min: 16, max: 255 }] : [];
+  for (let c = 0; c < cells; c++) {
+    for (const attr of ['red', 'green', 'blue']) channels.push({ attr, cell: c });
+  }
+  return { id, name, manufacturer: 'Generic', kind: 'pixel', beamAngle: 60, length, channels };
+}
+BUILTIN_PROFILES.push(
+  pixelBar('generic.pixelbar-8rgb', 'LED pixel bar, 8 × RGB (26 ch)', 8),
+  pixelBar('generic.pixelbar-16rgb', 'LED pixel bar, 16 × RGB (48 ch)', 16, { master: false }),
+);
+
 const BUILTIN_BY_ID = new Map(BUILTIN_PROFILES.map((p) => [p.id, p]));
 
 export function getBuiltinProfile(id) {
@@ -162,6 +182,51 @@ export function allProfiles(show) {
 
 export function footprint(profile) {
   return profile ? profile.channels.length : 0;
+}
+
+/** Number of cells of a pixel fixture; 0 for an ordinary fixture (one light). */
+export function cellCount(profile) {
+  let max = -1;
+  for (const c of profile?.channels || []) if (Number.isInteger(c.cell) && c.cell > max) max = c.cell;
+  return max >= 1 ? max + 1 : 0;
+}
+
+/**
+ * Where each cell sits on the fixture, in metres in the fixture's own frame: [x, z], x along
+ * the cells (left to right), z across rows; the fixture's position is the centre. The beam of
+ * every cell points out of the fixture like an ordinary fixture's (local +Y).
+ */
+export function cellOffsets(profile) {
+  const n = cellCount(profile);
+  if (!n) return [];
+  const grid = Array.isArray(profile.cellGrid) && profile.cellGrid.length === 2 ? profile.cellGrid : [n, 1];
+  const cols = Math.max(1, Math.round(grid[0]) || n);
+  const rows = Math.max(1, Math.ceil(n / cols));
+  const length = profile.length > 0 ? profile.length : 0.125 * cols;
+  const pitch = length / cols;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    out.push([(col - (cols - 1) / 2) * pitch, (row - (rows - 1) / 2) * pitch]);
+  }
+  return out;
+}
+
+/** A channel's name for people: its label, or its attribute (and cell, on a pixel fixture). */
+export function channelName(ch) {
+  if (ch.label) return ch.label;
+  const base = `${ch.attr}${ch.fine ? ' fine' : ''}`;
+  return Number.isInteger(ch.cell) ? `cell ${ch.cell + 1} ${base}` : base;
+}
+
+/** A profile's channels in one line; pixel fixtures as "master ..., then 8 cells × red, green, blue". */
+export function channelSummary(profile) {
+  const n = cellCount(profile);
+  if (!n) return profile.channels.map(channelName).join(', ');
+  const master = profile.channels.filter((c) => !Number.isInteger(c.cell)).map((c) => c.label || c.attr);
+  const perCell = profile.channels.filter((c) => c.cell === 0).map((c) => `${c.attr}${c.fine ? ' fine' : ''}`);
+  return `${master.length ? `${master.join(', ')}, then ` : ''}${n} cells × ${perCell.join(', ')}`;
 }
 
 /** Summarize what a profile can do; the renderer and the auto-sequencer both rely on this. */
@@ -187,6 +252,7 @@ export function profileCaps(profile) {
     gobo: attrs.has('gobo'),
     prism: attrs.has('prism'),
     emitsLight: attrs.has('dimmer') || hasRgb || hasCmy || attrs.has('white'),
+    cells: cellCount(profile),
   };
 }
 
@@ -211,6 +277,7 @@ export function beamAngle(profile, zoom = 0.5) {
 export function fixtureRole(profile) {
   const caps = profileCaps(profile);
   if (caps.panTilt) return 'mover';
+  if (caps.cells && caps.color) return 'pixel';
   if (profile.kind === 'strobe' || (caps.strobe && !caps.color)) return 'strobe';
   if (caps.color) return 'wash';
   return 'dimmer';
@@ -229,6 +296,9 @@ export function checkProfile(p) {
       if (!c || !ATTRIBUTES.includes(c.attr)) errors.push(`Channel ${i + 1}: unknown attribute "${c?.attr}"`);
       if ((c?.attr === 'gobo' || c?.attr === 'colorWheel') && (!Array.isArray(c.slots) || !c.slots.length)) {
         errors.push(`Channel ${i + 1}: wheel channels need slots`);
+      }
+      if (c && c.cell !== undefined && !(Number.isInteger(c.cell) && c.cell >= 0 && c.cell < 1024)) {
+        errors.push(`Channel ${i + 1}: cell must be a whole number from 0 to 1023`);
       }
     });
   }

@@ -46,7 +46,7 @@ The app has two modes: **Edit** (build the show) and **Live** (run it).
 
 | Step | Where | What you do |
 | --- | --- | --- |
-| 1 | Edit › Patch | Add fixtures and give them DMX addresses. Drag them into place on the **stage layout** (top, front and side views; drag the dot on a beam line to aim a fixture), or drag them to new addresses on the **DMX address grid**. Similar fixtures are **grouped automatically**. Import exact fixture files from [Open Fixture Library](https://open-fixture-library.org) (download as *OFL JSON*). |
+| 1 | Edit › Patch | Add fixtures and give them DMX addresses. Drag them into place on the **stage layout** (top, front and side views; drag the dot on a beam line to aim a fixture), or drag them to new addresses on the **DMX address grid**. Similar fixtures are **grouped automatically**. Import exact fixture files from [Open Fixture Library](https://open-fixture-library.org) (download as *OFL JSON*), pixel bars included. |
 | 2 | Edit › Calibrate | Moving heads only. Set the **centre point**, **Prime** all heads onto it, and nudge each one until its beam lands on the mark. The offsets are saved and applied to every cue and generated design. |
 | 3 | Edit › Song | Drop in an MP3/WAV/AAC/FLAC. The app detects BPM, beats, bars, sections, drops and the drum pattern. Correct the grid if needed (Tap, ×2/÷2, nudge, bar start), fix section labels, then **Generate show**: it pulses on the real kick drum, flicks on the hi-hats, flares on the snares, changes looks every 8 bars and builds up into each drop. |
 | 4 | Edit › Timeline | Edit the generated clips: move, resize, copy, change effects, keyframes. Everything snaps to the beat. |
@@ -62,6 +62,18 @@ Keys: **Space** play/pause · **Ctrl+Z / Ctrl+Y** undo/redo · **Delete**, **Ctr
 on selected clips · stage layout: **arrows** nudge the selection 10 cm (Shift 50 cm) ·
 Calibrate: **arrows** move the beam's spot (Shift for bigger steps) · Live mode: **B** blackout,
 hold **F** blinder, hold **S** strobe, **←/→** nudge.
+
+## Pixel bars, gobos and prisms
+
+- **Pixel bars** (and tubes or panels) are patched as one fixture, and each pixel is lit on its
+  own: a chase or rainbow runs across the pixels, and across several bars in stage order. Colours,
+  scenes and faders on the bar reach every pixel; the Control page lists every channel by cell.
+  Two generic bars are built in (8 × RGB with master dimmer and strobe, and 16 × RGB); import the
+  exact model from Open Fixture Library, which describes pixel fixtures as a matrix. The
+  generator and the auto show treat them like colour washes, so their chases run pixel by pixel.
+- **Gobos and prisms** show in the 3D view: a gobo breaks the beam into its pattern of shafts with
+  matching spots on the floor (a different pattern per gobo slot), and a prism splits the beam in
+  three. Generated shows give moving heads a gobo in quiet parts and a prism in breakdowns.
 
 ## Manual control, scenes and calibration
 
@@ -195,8 +207,6 @@ I changed or tightened it, and why.
   If the DJ changes tempo (pitch fader) a fixed timeline drifts. The fix is to follow an
   external clock: Ableton Link, MIDI clock/timecode, or Pioneer Pro DJ Link from CDJs. Which
   DJ setup will you use?
-- Pixel bars and other multi-cell fixtures (patch the cells as separate fixtures for now).
-- Visual rendering of gobos and prisms in the 3D view (the DMX output already supports them).
 - Packaging as a desktop app or installer, if Node.js should be hidden from the operator.
 
 ## Project layout

@@ -186,6 +186,12 @@ export function sectionLook(label, o = {}) {
       : { type: 'chase', params: { step: speed(0.5), direction: 'bounce', width: 1, tail: 2, level: lvlE(1), order: 'x', dimmerMode: 'htp' } };
   } else if (label !== 'intro') {
     look.beams = { type: 'static', params: { dimmer: lvlE(MOVER_DIM[label] ?? 0.6), dimmerMode: 'htp' } };
+    // Quiet parts get texture: a gobo (a different one each phrase) and, in a breakdown, a
+    // prism. Drops and grooves keep open beams. Fixtures without gobo or prism ignore it.
+    if (label === 'breakdown' || label === 'low') {
+      look.beams.params.gobo = pick([1, 2, 3], p);
+      look.beams.params.prism = label === 'breakdown' && style.sparkle ? 1 : 0;
+    }
   }
   if (g?.backbeat && (label === 'groove' || energetic)) {
     look.backbeat = pulse(2, 0.35, lvlE(1), { offset: 1 });

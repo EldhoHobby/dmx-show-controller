@@ -4,7 +4,7 @@
 // progress) while the table and the address grid re-render around it.
 
 import { h, mount, select, numberInput, textInput, icon, toast, dialog, pickFile, confirmDialog } from '../lib/dom.js';
-import { allProfiles, footprint, resolveProfile, profileCaps, checkProfile, fixtureRole } from '/shared/fixture-library.js';
+import { allProfiles, footprint, resolveProfile, profileCaps, checkProfile, fixtureRole, channelName, channelSummary } from '/shared/fixture-library.js';
 import { fixtureGroups } from '/shared/groups.js';
 import { LayoutEditor, ROLE_COLORS } from './layout.js';
 import { importOflFixture, oflModes } from '/shared/ofl-import.js';
@@ -204,7 +204,7 @@ export class PatchView {
         'div',
         { class: 'stack' },
         h('label', { class: 'field' }, h('span', {}, 'Fixture type'), select(profiles.map((p) => [p.id, `${p.name}${p.manufacturer && p.manufacturer !== 'Generic' ? ` — ${p.manufacturer}` : ''}`]), profile.id, set('profileId'))),
-        h('div', { class: 'muted', style: { marginLeft: '128px' } }, `${n} channels: ${profile.channels.map((c) => c.label || c.attr + (c.fine ? ' fine' : '')).join(', ')}`),
+        h('div', { class: 'muted', style: { marginLeft: '128px' } }, `${n} channels: ${channelSummary(profile)}`),
         h('label', { class: 'field' }, h('span', {}, 'How many'), numberInput(o.count, set('count'), { min: 1, max: 64 })),
         h('label', { class: 'field' }, h('span', {}, 'Name'), textInput(o.prefix, (v) => (o.prefix = v), { placeholder: defaultPrefix(profile) })),
         h('label', { class: 'field' }, h('span', {}, 'Universe'), numberInput(o.universe, set('universe'), { min: 1, max: 63999 })),
@@ -352,7 +352,7 @@ export class PatchView {
       const first = rec && rec.f.address - 1 === i;
       const ch = rec ? i - (rec.f.address - 1) : -1;
       const chDef = rec?.profile?.channels[ch];
-      const chName = chDef ? chDef.label || `${chDef.attr}${chDef.fine ? ' fine' : ''}` : '';
+      const chName = chDef ? channelName(chDef) : '';
       const span = first ? Math.min(rec.n, 32 - (i % 32)) : 0;
       cells.push(h('div', {
         class: `cell${rec ? ' used' : ''}${first ? ' first' : ''}${clash[i] ? ' clash' : ''}${id && selected.has(id) ? ' sel' : ''}`,

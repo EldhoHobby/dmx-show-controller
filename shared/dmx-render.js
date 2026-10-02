@@ -35,11 +35,8 @@ function wheelDmx(slots, rgb) {
   return best.dmx ?? 0;
 }
 
-/**
- * Channel values for one fixture record (from createEvaluator) in state s.
- * Writes into `out` (length = profile channel count) and returns it.
- */
-export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile.channels.length)) {
+/** Attribute values 0..1 of one state as channels show them; `ownDimmer` = has a dimmer channel. */
+function stateValues(rec, s, wallMs, ownDimmer) {
   const { profile, caps } = rec;
   let dim = clamp(s.dimmer, 0, 1);
   if (s.strobe > 0.001 && !caps.strobe && !softwareStrobeOn(s.strobe, wallMs)) dim = 0;
@@ -47,8 +44,8 @@ export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile
   let r = clamp(s.color[0], 0, 1);
   let g = clamp(s.color[1], 0, 1);
   let b = clamp(s.color[2], 0, 1);
-  // Fixtures without a dimmer channel get intensity baked into their colour channels.
-  if (!caps.dimmer) {
+  // Without a dimmer channel, intensity is baked into the colour channels.
+  if (!ownDimmer) {
     r *= dim;
     g *= dim;
     b *= dim;
@@ -60,11 +57,11 @@ export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile
     g -= w;
     b -= w;
   } else if (caps.color === 'white') {
-    w = caps.dimmer ? 1 : dim;
+    w = ownDimmer ? 1 : dim;
   }
   const pr = panRange(profile);
   const tr = tiltRange(profile);
-  const values = {
+  return {
     dimmer: dim,
     red: r,
     green: g,
@@ -79,29 +76,64 @@ export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile
     pan: clamp((s.pan + pr / 2) / pr, 0, 1),
     tilt: clamp((s.tilt + tr / 2) / tr, 0, 1),
   };
+}
+
+// Cells of a pixel profile that have a dimmer channel of their own.
+const CELL_DIMMERS = new WeakMap();
+function cellDimmers(profile) {
+  let set = CELL_DIMMERS.get(profile);
+  if (!set) {
+    set = new Set(profile.channels.filter((c) => c.attr === 'dimmer' && Number.isInteger(c.cell)).map((c) => c.cell));
+    CELL_DIMMERS.set(profile, set);
+  }
+  return set;
+}
+
+/**
+ * Channel values for one fixture record (from createEvaluator) in state s.
+ * Writes into `out` (length = profile channel count) and returns it.
+ * A pixel fixture also takes its cells' states: each cell channel shows its cell, while the
+ * fixture's own channels (master dimmer, strobe) open when any cell is lit and strobe as fast
+ * as the fastest cell.
+ */
+export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile.channels.length), cellStates = null) {
+  const { profile } = rec;
+  let values = stateValues(rec, s, wallMs, rec.caps.dimmer);
+  let master = s;
+  let cellValues = null;
+  if (cellStates?.length) {
+    const own = cellDimmers(profile);
+    cellValues = cellStates.map((cs, i) => (cs ? stateValues(rec, cs, wallMs, own.has(i)) : null));
+    const lit = cellValues.some((v) => v && v.dimmer > 0.001);
+    values = { ...values, dimmer: lit ? 1 : 0 };
+    master = { ...s, strobe: Math.max(s.strobe, ...cellStates.map((c) => c?.strobe || 0)) };
+  }
 
   const channels = profile.channels;
   for (let i = 0; i < channels.length; i++) {
     const ch = channels[i];
+    const inCell = cellValues && Number.isInteger(ch.cell);
+    const st = (inCell && cellStates[ch.cell]) || master;
+    const vals = (inCell && cellValues[ch.cell]) || values;
     let dmx;
     switch (ch.attr) {
       case 'fixed':
         dmx = ch.value ?? 0;
         break;
       case 'strobe':
-        dmx = s.strobe > 0.001 ? lerp(ch.min ?? 1, ch.max ?? 255, clamp(s.strobe, 0, 1)) : (ch.off ?? 0);
+        dmx = st.strobe > 0.001 ? lerp(ch.min ?? 1, ch.max ?? 255, clamp(st.strobe, 0, 1)) : (ch.off ?? 0);
         break;
       case 'prism':
-        dmx = s.prism >= 0.5 ? (ch.on ?? 255) : (ch.off ?? 0);
+        dmx = st.prism >= 0.5 ? (ch.on ?? 255) : (ch.off ?? 0);
         break;
       case 'gobo':
-        dmx = slotDmx(ch.slots, s.gobo);
+        dmx = slotDmx(ch.slots, st.gobo);
         break;
       case 'colorWheel':
-        dmx = wheelDmx(ch.slots, s.color);
+        dmx = wheelDmx(ch.slots, st.color);
         break;
       default: {
-        let v = values[ch.attr] ?? 0;
+        let v = vals[ch.attr] ?? 0;
         if (ch.invert) v = 1 - v;
         if (rec.fineAttrs.has(ch.attr)) {
           const v16 = Math.round(v * 65535);
@@ -141,7 +173,7 @@ export function renderUniverses(evaluator, states, wallMs, universes = new Map()
       buf = new Uint8Array(UNIVERSE_SIZE);
       universes.set(f.universe, buf);
     }
-    buf.set(fixtureChannels(rec, s, wallMs), start);
+    buf.set(fixtureChannels(rec, s, wallMs, undefined, rec.cells ? rec.cells.map((c) => states.get(c.id)) : null), start);
   }
   if (states.raw?.size) {
     const intensity = states.intensity ?? 1;
@@ -156,7 +188,8 @@ export function renderUniverses(evaluator, states, wallMs, universes = new Map()
       for (const [i, v] of chans) {
         const ch = channels[i];
         if (!ch) continue;
-        const carriesIntensity = ch.attr === 'dimmer' || (!rec.caps.dimmer && COLOR_INTENSITY.has(ch.attr));
+        const ownDimmer = Number.isInteger(ch.cell) && rec.cells ? cellDimmers(rec.profile).has(ch.cell) : rec.caps.dimmer;
+        const carriesIntensity = ch.attr === 'dimmer' || (!ownDimmer && COLOR_INTENSITY.has(ch.attr));
         if (!carriesIntensity) buf[start + i] = v;
         else if (!states.flash) buf[start + i] = Math.round(v * intensity);
       }

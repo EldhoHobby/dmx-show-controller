@@ -2,13 +2,16 @@
 //
 // It evaluates the show with the same shared code the engine uses, at the same transport
 // position, so the beams on screen are what the DMX output is doing. Beams are additive cones
-// with a soft core; floor spots appear where beams hit the floor.
+// with a soft core; floor spots appear where beams hit the floor. Gobos break a beam into
+// narrow shafts with patterned floor spots and prisms split it in three (shared/beam-shapes.js);
+// pixel bars glow cell by cell, each cell with a beam of its own.
 //
 // Mouse/touch: drag to orbit, wheel or pinch to zoom, double-click to reset the camera.
 
 import { beamDirection, floorHit } from '/shared/kinematics.js';
-import { beamAngle } from '/shared/fixture-library.js';
+import { beamAngle, cellOffsets } from '/shared/fixture-library.js';
 import { softwareStrobeOn } from '/shared/dmx-render.js';
+import { beamParts } from '/shared/beam-shapes.js';
 
 const VS = `
 attribute vec3 aPos;
@@ -312,42 +315,87 @@ export class Visualizer {
     const states = ev.evaluate(position, store.liveContext(), store.net.serverNow());
     const wall = performance.now();
     const beams = [];
+    const glows = [];
+    const lit = (st) => {
+      if (!st) return 0;
+      let dim = Math.max(0, Math.min(1, st.dimmer));
+      if (st.strobe > 0.001 && !softwareStrobeOn(st.strobe, wall)) dim = 0;
+      return dim < 0.01 ? 0 : dim;
+    };
     for (const rec of ev.fixtures) {
       const f = rec.fixture;
       const s = states.get(rec.id);
       const pos = [f.position.x, f.position.y, f.position.z];
       const m = rec.matrix;
-      const bodyM = basisMatrix(pos, [m[0], m[3], m[6]], [m[1], m[4], m[7]], [m[2], m[5], m[8]], 0.32, rec.caps.panTilt ? 0.42 : 0.22, 0.32);
+      const ax = [m[0], m[3], m[6]];
+      const ay = [m[1], m[4], m[7]];
+      const az = [m[2], m[5], m[8]];
+      if (rec.cells) {
+        // A pixel bar: a slim body the length of its cells, every cell glowing and shining.
+        const offs = cellOffsets(rec.profile);
+        const xs = offs.map((o) => o[0]);
+        const zs = offs.map((o) => o[1]);
+        const pitch = offs.length > 1 ? Math.max(0.03, Math.abs(xs[1] - xs[0]) || Math.abs(zs[1] - zs[0])) : 0.12;
+        const width = Math.max(...xs) - Math.min(...xs) + pitch;
+        const depth = Math.max(...zs) - Math.min(...zs) + pitch;
+        this.draw(this.geo.box, gl.TRIANGLES, multiply(vp, basisMatrix(pos, ax, ay, az, width, 0.07, Math.max(0.1, depth))), [0.2, 0.22, 0.26, 1]);
+        for (const cell of rec.cells) {
+          const cs = states.get(cell.id);
+          const dim = lit(cs);
+          if (!dim) continue;
+          const cp = [cell.fixture.position.x, cell.fixture.position.y, cell.fixture.position.z];
+          const face = [cp[0] + ay[0] * 0.04, cp[1] + ay[1] * 0.04, cp[2] + ay[2] * 0.04];
+          glows.push({ m: basisMatrix(face, ax, ay, az, pitch * 0.8, 0.02, pitch * 0.8), color: cs.color, dim });
+          // Pixels are watched directly: a short, faint wash rather than a long beam.
+          beams.push({ pos: cp, dir: beamDirection(f, 0, 0, m), dim: dim * 0.22, color: cs.color, angle: beamAngle(rec.profile, cs.zoom), maxLen: 4, spot: false });
+        }
+        continue;
+      }
+      const bodyM = basisMatrix(pos, ax, ay, az, 0.32, rec.caps.panTilt ? 0.42 : 0.22, 0.32);
       this.draw(this.geo.box, gl.TRIANGLES, multiply(vp, bodyM), rec.caps.panTilt ? [0.3, 0.32, 0.37, 1] : [0.24, 0.26, 0.3, 1]);
       if (!rec.caps.emitsLight || !s) continue;
-      let dim = Math.max(0, Math.min(1, s.dimmer));
-      if (s.strobe > 0.001 && !softwareStrobeOn(s.strobe, wall)) dim = 0;
-      if (dim < 0.01) continue;
+      const dim = lit(s);
+      if (!dim) continue;
       const dir = rec.caps.panTilt ? beamDirection(f, s.pan, s.tilt, m) : beamDirection(f, 0, 0, m);
-      beams.push({ pos, dir, dim, color: s.color, angle: beamAngle(rec.profile, s.zoom) });
+      beams.push({ pos, dir, dim, color: s.color, angle: beamAngle(rec.profile, s.zoom), gobo: rec.caps.gobo ? s.gobo : 0, prism: rec.caps.prism ? s.prism : 0 });
     }
 
     // Light pass: additive, no depth writes, so overlapping beams add up like real light.
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.depthMask(false);
+    for (const g of glows) {
+      // Twice: the pixel itself, and a soft glow around it.
+      this.draw(this.geo.box, gl.TRIANGLES, multiply(vp, g.m), [g.color[0], g.color[1], g.color[2], g.dim]);
+      this.draw(this.geo.box, gl.TRIANGLES, multiply(vp, multiply(g.m, new Float32Array([1.8, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, 1.8, 0, 0, 0, 0, 1]))), [g.color[0], g.color[1], g.color[2], 0.25 * g.dim]);
+    }
     for (const b of beams) {
-      const hit = floorHit({ x: b.pos[0], y: b.pos[1], z: b.pos[2] }, b.dir);
-      const len = Math.min(22, hit ? hit.distance : 16);
-      const half = (b.angle * Math.PI) / 360;
-      const radius = len * Math.tan(half);
-      const helper = Math.abs(b.dir[1]) < 0.99 ? [0, 1, 0] : [1, 0, 0];
-      const u = norm(cross(helper, b.dir));
-      const wv = cross(u, b.dir);
       const col = b.color;
-      const outer = basisMatrix(b.pos, u, b.dir, wv, radius, len, radius);
-      this.draw(this.geo.cone, gl.TRIANGLES, multiply(vp, outer), [col[0], col[1], col[2], 0.16 * b.dim]);
-      const inner = basisMatrix(b.pos, u, b.dir, wv, radius * 0.45, len * 0.85, radius * 0.45);
-      this.draw(this.geo.cone, gl.TRIANGLES, multiply(vp, inner), [col[0], col[1], col[2], 0.22 * b.dim]);
-      if (hit && hit.distance < 30) {
-        const r = Math.max(0.15, hit.distance * Math.tan(half) * 1.15);
-        const spot = basisMatrix([hit.x, 0.02, hit.z], [1, 0, 0], [0, 1, 0], [0, 0, 1], r, 1, r);
-        this.draw(this.geo.disc, gl.TRIANGLES, multiply(vp, spot), [col[0], col[1], col[2], 0.7 * b.dim]);
+      for (const part of beamParts(b.dir, b.angle, b.gobo || 0, b.prism || 0)) {
+        const dir = part.dir;
+        const dim = b.dim * part.share;
+        const hit = floorHit({ x: b.pos[0], y: b.pos[1], z: b.pos[2] }, dir);
+        const len = Math.min(b.maxLen || 22, hit ? hit.distance : 16);
+        const half = (part.angle * Math.PI) / 360;
+        const radius = len * Math.tan(half);
+        const helper = Math.abs(dir[1]) < 0.99 ? [0, 1, 0] : [1, 0, 0];
+        const u = norm(cross(helper, dir));
+        const wv = cross(u, dir);
+        if (part.shaped) {
+          // A gobo shaft: crisp, no soft halo.
+          const shaft = basisMatrix(b.pos, u, dir, wv, radius, len, radius);
+          this.draw(this.geo.cone, gl.TRIANGLES, multiply(vp, shaft), [col[0], col[1], col[2], 0.3 * dim]);
+        } else {
+          const outer = basisMatrix(b.pos, u, dir, wv, radius, len, radius);
+          this.draw(this.geo.cone, gl.TRIANGLES, multiply(vp, outer), [col[0], col[1], col[2], 0.16 * dim]);
+          const inner = basisMatrix(b.pos, u, dir, wv, radius * 0.45, len * 0.85, radius * 0.45);
+          this.draw(this.geo.cone, gl.TRIANGLES, multiply(vp, inner), [col[0], col[1], col[2], 0.22 * dim]);
+        }
+        if (hit && hit.distance < 30 && b.spot !== false) {
+          const r = Math.max(part.shaped ? 0.05 : 0.15, hit.distance * Math.tan(half) * 1.15);
+          const spot = basisMatrix([hit.x, 0.02, hit.z], [1, 0, 0], [0, 1, 0], [0, 0, 1], r, 1, r);
+          this.draw(this.geo.disc, gl.TRIANGLES, multiply(vp, spot), [col[0], col[1], col[2], (part.shaped ? 0.9 : 0.7) * dim]);
+        }
       }
     }
     gl.depthMask(true);

@@ -9,7 +9,7 @@
 
 import { h, mount, icon, toast, confirmDialog, fitCanvas, numberInput, textInput } from '../lib/dom.js';
 import { fixtureGroups } from '/shared/groups.js';
-import { panRange, tiltRange } from '/shared/fixture-library.js';
+import { channelName, panRange, tiltRange } from '/shared/fixture-library.js';
 import { renderUniverses } from '/shared/dmx-render.js';
 import { NAMED_COLORS, hexToRgb, rgbToHex } from '/shared/color.js';
 import { clamp, uid } from '/shared/util.js';
@@ -308,7 +308,7 @@ export class ControlView {
   channelRow(rec, ch, i) {
     const st = this.store;
     const id = rec.id;
-    const name = ch.label || `${ch.attr}${ch.fine ? ' fine' : ''}`;
+    const name = channelName(ch);
     const input = h('input', { type: 'range', min: 0, max: 255, step: 1, 'aria-label': `Channel ${rec.fixture.address + i}: ${name}` });
     const num = h('input', { type: 'number', min: 0, max: 255, class: 'ch-num', 'aria-label': `${name} value` });
     const out = h('span', { class: 'ch-out mono', title: 'Value going out on DMX now' });

@@ -102,8 +102,62 @@ test('OFL colour mixing par maps every LED colour', () => {
   assert.equal(p.kind, 'par');
 });
 
-test('OFL import rejects non-fixture JSON and pixel matrices', () => {
+test('OFL import rejects non-fixture JSON and a matrix insert without a matrix', () => {
   assert.throws(() => importOflFixture({ hello: 1 }), /not an Open Fixture Library/);
   const matrix = { ...PAR, modes: [{ name: 'Pixel', channels: [{ insert: 'matrixChannels' }] }] };
-  assert.throws(() => importOflFixture(matrix), /Pixel-matrix/);
+  assert.throws(() => importOflFixture(matrix), /unsupported channel insert/);
+});
+
+// A pixel bar the way Open Fixture Library describes one: a matrix of pixels and template
+// channels that a mode repeats for every pixel.
+const RGB_TEMPLATES = ['Red $pixelKey', 'Green $pixelKey', 'Blue $pixelKey'];
+const BAR = {
+  name: 'Test Pixel Bar',
+  categories: ['Pixel Bar', 'Color Changer'],
+  physical: { dimensions: [1000, 60, 80], lens: { degreesMinMax: [30, 30] } },
+  matrix: { pixelCount: [12, 1, 1] },
+  availableChannels: {
+    Dimmer: { capability: { type: 'Intensity' } },
+    Strobe: {
+      capabilities: [
+        { dmxRange: [0, 9], type: 'ShutterStrobe', shutterEffect: 'Open' },
+        { dmxRange: [10, 255], type: 'ShutterStrobe', shutterEffect: 'Strobe', speedStart: 'slow', speedEnd: 'fast' },
+      ],
+    },
+  },
+  templateChannels: {
+    'Red $pixelKey': { capability: { type: 'ColorIntensity', color: 'Red' } },
+    'Green $pixelKey': { capability: { type: 'ColorIntensity', color: 'Green' } },
+    'Blue $pixelKey': { capability: { type: 'ColorIntensity', color: 'Blue' } },
+  },
+  modes: [
+    { name: '38-channel', shortName: '38ch', channels: ['Dimmer', 'Strobe', { insert: 'matrixChannels', repeatFor: 'eachPixelABC', channelOrder: 'perPixel', templateChannels: RGB_TEMPLATES }] },
+    { name: 'By colour', shortName: '36ch', channels: [{ insert: 'matrixChannels', repeatFor: 'eachPixelXYZ', channelOrder: 'perChannel', templateChannels: RGB_TEMPLATES }] },
+    { name: 'Single pixel', shortName: '3ch', channels: ['Red 1', 'Green 1', 'Blue 1'] },
+  ],
+};
+
+test('OFL pixel bars import as cells: one RGB triple per pixel, in pixel order', () => {
+  const p = importOflFixture(BAR, { modeIndex: 0 });
+  assert.deepEqual(checkProfile(p), []);
+  assert.equal(p.kind, 'pixel');
+  assert.equal(p.channels.length, 38);
+  assert.equal(profileCaps(p).cells, 12);
+  assert.equal(p.length, 1, 'bar length from the physical width');
+  assert.deepEqual(p.channels.slice(0, 2).map((c) => [c.attr, c.cell]), [['dimmer', undefined], ['strobe', undefined]]);
+  // Pixels 1..12 in natural order (not 1, 10, 11, 12, 2...), each R, G, B.
+  assert.deepEqual(p.channels.slice(2, 8).map((c) => [c.attr, c.cell]), [['red', 0], ['green', 0], ['blue', 0], ['red', 1], ['green', 1], ['blue', 1]]);
+  assert.deepEqual(p.channels.slice(-3).map((c) => [c.attr, c.cell]), [['red', 11], ['green', 11], ['blue', 11]]);
+});
+
+test('OFL pixel modes ordered by colour, 2D panels, and single-pixel modes', () => {
+  const byColour = importOflFixture(BAR, { modeIndex: 1 });
+  assert.deepEqual(byColour.channels.slice(0, 3).map((c) => [c.attr, c.cell]), [['red', 0], ['red', 1], ['red', 2]]);
+  assert.deepEqual([byColour.channels[12].attr, byColour.channels[12].cell], ['green', 0]);
+  const single = importOflFixture(BAR, { modeIndex: 2 });
+  assert.deepEqual(single.channels.map((c) => [c.attr, c.cell]), [['red', 0], ['green', 0], ['blue', 0]]);
+  const panel = importOflFixture({ ...BAR, matrix: { pixelCount: [4, 2, 1] }, modes: [{ name: 'Panel', channels: [{ insert: 'matrixChannels', repeatFor: 'eachPixelXYZ', channelOrder: 'perPixel', templateChannels: RGB_TEMPLATES }] }] });
+  assert.equal(profileCaps(panel).cells, 8);
+  assert.deepEqual(panel.cellGrid, [4, 2]);
+  assert.equal(panel.channels[3 * 4].cell, 4, 'the second row starts at the fifth pixel');
 });

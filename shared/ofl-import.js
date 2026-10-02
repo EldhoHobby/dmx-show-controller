@@ -3,7 +3,8 @@
 //
 // Supported: intensity, RGB/RGBW/RGBAW/UV/CMY colour mixing, pan/tilt (8 and 16 bit),
 // shutter/strobe, colour and gobo wheels, prism, zoom. Every other channel is held at its
-// default value. Pixel-matrix fixtures (matrix channel inserts) are not supported yet.
+// default value. Pixel fixtures (OFL "matrix" with template channels) become cells: every
+// pixel's channels get a cell number, so effects run across the pixels.
 
 const COLOR_ATTR = {
   Red: 'red',
@@ -135,6 +136,55 @@ function convertChannel(ofl, key, def, info) {
   return fixed();
 }
 
+// ---- Pixel matrices --------------------------------------------------------------------
+
+/**
+ * The pixels of an OFL matrix with their grid positions, x fastest (row by row). Keys are the
+ * matrix's own, or generated from pixelCount the way OFL does: "1", "2"... for a line,
+ * "(x, y)" for a grid, "(x, y, z)" for a cube.
+ */
+export function matrixPixels(ofl) {
+  const m = ofl?.matrix;
+  if (!m || typeof m !== 'object') return [];
+  const out = [];
+  if (Array.isArray(m.pixelKeys)) {
+    m.pixelKeys.forEach((plane, z) => (Array.isArray(plane) ? plane : []).forEach((row, y) => (Array.isArray(row) ? row : []).forEach((key, x) => {
+      if (key != null) out.push({ key: String(key), x, y, z });
+    })));
+    return out;
+  }
+  if (!Array.isArray(m.pixelCount)) return [];
+  const [nx = 1, ny = 1, nz = 1] = m.pixelCount.map((n) => Math.max(1, Math.round(n) || 1));
+  const axes = [nx, ny, nz].filter((n) => n > 1).length;
+  for (let z = 0; z < nz; z++) {
+    for (let y = 0; y < ny; y++) {
+      for (let x = 0; x < nx; x++) {
+        const used = [[nx, x], [ny, y], [nz, z]].filter(([n]) => n > 1).map(([, i]) => i + 1);
+        const key = axes <= 1 ? String(x + y + z + 1) : axes === 2 ? `(${used[0]}, ${used[1]})` : `(${x + 1}, ${y + 1}, ${z + 1})`;
+        out.push({ key, x, y, z });
+      }
+    }
+  }
+  return out;
+}
+
+/** Pixel (or pixel group) keys in the order a matrix channel insert repeats its channels. */
+function repeatOrder(repeatFor, pixels, matrix) {
+  if (Array.isArray(repeatFor)) return repeatFor.map(String);
+  if (repeatFor === 'eachPixelGroup') return Object.keys(matrix?.pixelGroups || {});
+  if (repeatFor === 'eachPixelABC') return pixels.map((p) => p.key).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const axes = /^eachPixel([XYZ]{3})$/.exec(repeatFor || '');
+  if (axes) {
+    // "XYZ": x changes fastest, then y, then z.
+    const order = axes[1].toLowerCase().split('').reverse();
+    return pixels
+      .slice()
+      .sort((a, b) => order.reduce((d, axis) => d || a[axis] - b[axis], 0))
+      .map((p) => p.key);
+  }
+  return pixels.map((p) => p.key);
+}
+
 export function oflModes(ofl) {
   if (!ofl || !Array.isArray(ofl.modes)) return [];
   return ofl.modes.map((m, index) => ({
@@ -152,31 +202,66 @@ export function importOflFixture(ofl, { modeIndex = 0, manufacturer = '' } = {})
   }
   const mode = ofl.modes[modeIndex];
   if (!mode || !Array.isArray(mode.channels) || !mode.channels.length) throw new Error('That fixture mode has no channels.');
-  if (mode.channels.some((c) => c && typeof c === 'object')) {
-    throw new Error('Pixel-matrix fixtures are not supported yet. Choose a non-pixel mode, or patch the cells as separate fixtures.');
-  }
-
   // Fine channel aliases ("Pan fine") point back at their coarse channel.
   const fineOf = new Map();
   for (const [key, def] of Object.entries(ofl.availableChannels)) {
     for (const alias of def?.fineChannelAliases || []) fineOf.set(alias, key);
   }
 
+  // Pixel fixtures: every template channel ("Red $pixelKey") resolved for every pixel ("Red 1").
+  const pixels = matrixPixels(ofl);
+  const cellOf = new Map(pixels.map((p, i) => [p.key, i]));
+  const resolved = new Map();
+  for (const [tkey, def] of Object.entries(ofl.templateChannels || {})) {
+    const keys = [...pixels.map((p) => p.key), ...Object.keys(ofl.matrix?.pixelGroups || {})];
+    for (const pk of keys) {
+      const key = tkey.replace(/\$pixelKey/g, pk);
+      resolved.set(key, { def, cell: cellOf.get(pk) });
+      for (const alias of def?.fineChannelAliases || []) fineOf.set(alias.replace(/\$pixelKey/g, pk), key);
+    }
+  }
+  const defOf = (key) => ofl.availableChannels[key] || resolved.get(key)?.def;
+
+  // The mode's channel list, with matrix inserts expanded pixel by pixel (or channel by channel).
+  const modeKeys = [];
+  for (const entry of mode.channels) {
+    if (entry && typeof entry === 'object') {
+      if (entry.insert !== 'matrixChannels' || !pixels.length) throw new Error(`This fixture mode uses an unsupported channel insert ("${entry.insert}").`);
+      const order = repeatOrder(entry.repeatFor, pixels, ofl.matrix);
+      const templates = Array.isArray(entry.templateChannels) ? entry.templateChannels : [];
+      const name = (t, pk) => (t == null ? null : String(t).replace(/\$pixelKey/g, pk));
+      if (entry.channelOrder === 'perChannel') for (const t of templates) for (const pk of order) modeKeys.push(name(t, pk));
+      else for (const pk of order) for (const t of templates) modeKeys.push(name(t, pk));
+    } else {
+      modeKeys.push(entry);
+    }
+  }
+  if (modeKeys.length > 512) throw new Error(`That fixture mode has ${modeKeys.length} channels; a universe holds 512.`);
+
+  // Colours are claimed once per fixture, or once per pixel for pixel channels.
   const info = { usedColors: new Set(), usedWheels: new Set() };
+  const cellInfo = new Map();
+  const infoFor = (cell) => {
+    if (cell == null) return info;
+    if (!cellInfo.has(cell)) cellInfo.set(cell, { ...info, usedColors: new Set() });
+    return cellInfo.get(cell);
+  };
   const converted = new Map();
-  const channels = mode.channels.map((key) => {
+  const channels = modeKeys.map((key) => {
     if (key == null) return { attr: 'fixed', value: 0, label: 'Unused' };
+    const cell = resolved.get(key)?.cell ?? resolved.get(fineOf.get(key))?.cell;
+    const withCell = (ch) => (cell == null || ch.attr === 'fixed' ? ch : { ...ch, cell });
     if (fineOf.has(key)) {
       const coarse = fineOf.get(key);
-      const base = converted.get(coarse) || convertChannel(ofl, coarse, ofl.availableChannels[coarse], info);
+      const base = converted.get(coarse) || convertChannel(ofl, coarse, defOf(coarse), infoFor(cell));
       if (base.attr === 'pan' || base.attr === 'tilt' || base.attr === 'dimmer' || base.attr === 'zoom') {
-        return { attr: base.attr, fine: true, label: key };
+        return withCell({ attr: base.attr, fine: true, label: key });
       }
       return { attr: 'fixed', value: 0, label: key };
     }
-    const def = ofl.availableChannels[key];
+    const def = defOf(key);
     if (!def) return { attr: 'fixed', value: 0, label: String(key) };
-    const ch = convertChannel(ofl, key, def, info);
+    const ch = withCell(convertChannel(ofl, key, def, infoFor(cell)));
     converted.set(key, ch);
     return ch;
   });
@@ -186,7 +271,9 @@ export function importOflFixture(ofl, { modeIndex = 0, manufacturer = '' } = {})
   const finalChannels = channels.map((c) => (c.fine && !coarseAttrs.has(c.attr) ? { attr: 'fixed', value: 0, label: c.label } : c));
 
   const categories = Array.isArray(ofl.categories) ? ofl.categories : [];
-  const kind = categories.includes('Moving Head') || categories.includes('Scanner')
+  const kind = pixels.length >= 2 && channels.some((c) => c.cell != null)
+    ? 'pixel'
+    : categories.includes('Moving Head') || categories.includes('Scanner')
     ? 'moving-head'
     : categories.includes('Strobe')
       ? 'strobe'
@@ -204,6 +291,12 @@ export function importOflFixture(ofl, { modeIndex = 0, manufacturer = '' } = {})
     source: 'Open Fixture Library',
     channels: finalChannels,
   };
+  if (kind === 'pixel') {
+    const xs = new Set(pixels.map((p) => p.x)).size;
+    if (xs < pixels.length) profile.cellGrid = [xs, Math.ceil(pixels.length / xs)];
+    const width = ofl.physical?.dimensions?.[0];
+    if (width > 0) profile.length = width / 1000;
+  }
   const lens = ofl.physical?.lens?.degreesMinMax;
   if (Array.isArray(lens) && lens.length === 2) {
     if (lens[0] !== lens[1]) profile.zoomRange = [lens[0], lens[1]];

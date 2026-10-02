@@ -56,7 +56,7 @@ export function generateShow(show, options = {}) {
   const lvl = (v) => clamp(v * style.intensity, 0, 1);
 
   // ---- Fixture groups ----------------------------------------------------------------
-  const groups = { mover: [], wash: [], strobe: [], dimmer: [] };
+  const groups = { mover: [], wash: [], strobe: [], dimmer: [], pixel: [] };
   const colorIds = [];
   const xOf = new Map();
   for (const f of show.fixtures) {
@@ -67,7 +67,7 @@ export function generateShow(show, options = {}) {
     xOf.set(f.id, f.position.x);
   }
   const movers = groups.mover;
-  const pulsers = [...groups.wash, ...groups.dimmer];
+  const pulsers = [...groups.wash, ...groups.dimmer, ...groups.pixel]; // pixel bars chase cell by cell
   const strobes = groups.strobe;
   const everyLight = [...movers, ...pulsers]; // strobe units stay dark except for accents
   const colorFx = colorIds.filter((id) => !strobes.includes(id));
