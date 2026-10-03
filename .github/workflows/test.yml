@@ -22,11 +22,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 20 is the minimum the package declares; 24 is what the show machines run.
+        # 22 is the minimum the package declares; 24 is what the show machines run.
+        # Not 20: it went end-of-life in April 2026, and the test client uses the global
+        # WebSocket, which only arrived in Node 21. The engine itself needs neither — it
+        # implements its own WebSocket server — so it still runs on 20; we just cannot
+        # verify that here, and supported ought to mean tested.
         # Windows is included because that is where this is actually operated, and the
         # engine does platform-specific things there (process priority, timer resolution).
         os: [ubuntu-latest, windows-latest]
-        node: ['20', '24']
+        node: ['22', '24']
     steps:
       - uses: actions/checkout@v4
 
