@@ -5,6 +5,7 @@
 // By default only this computer can connect. Use --host 0.0.0.0 to let tablets and other
 // computers on the network open the app (anyone on that network can then control the lights).
 
+import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,8 +17,16 @@ import { loadConfig, normalizeConfig, saveConfig } from './config.js';
 import { attachWebSocketServer } from './ws-server.js';
 import { createRequestHandler, sameOrigin } from './http.js';
 
-const VERSION = '0.3.2';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Read rather than repeated, so the startup banner and the API cannot drift from the
+// package's version the way a second copy of the number eventually does.
+const VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 /**
  * The engine needs little processor time (about 1 ms a frame), but it needs it on time. On a

@@ -13,7 +13,15 @@ import {
   DISCOVERY_UNIVERSE,
   discoveryPackets,
 } from '../server/output/sacn.js';
-import { ARTDMX_SIZE, ArtNetOutput, parseArtDmx, writeArtDmx } from '../server/output/artnet.js';
+import {
+  ARTDMX_SIZE,
+  ArtNetOutput,
+  isArtPoll,
+  parseArtDmx,
+  parseArtPollReply,
+  writeArtDmx,
+  writeArtPollReply,
+} from '../server/output/artnet.js';
 
 const cid = cidFromUuid('6ba7b810-9dad-11d1-80b4-00c04fd430c8');
 
@@ -140,7 +148,9 @@ test('SacnOutput sends real UDP packets with incrementing sequence, then termina
 
 test('ArtNetOutput maps app universe 1 to Art-Net port address 0', async () => {
   const rx = await receiver(0);
-  const out = new ArtNetOutput({ universes: [1, 3], host: '127.0.0.1', port: rx.port, universeOffset: -1 });
+  // discovery off: this test owns rx.port, and test files run in parallel, so nothing here
+  // should be competing for a listening socket.
+  const out = new ArtNetOutput({ universes: [1, 3], host: '127.0.0.1', port: rx.port, universeOffset: -1, discovery: false });
   await out.open();
   out.send(new Map([[1, new Uint8Array(512).fill(1)]]));
   await new Promise((r) => setTimeout(r, 50));
@@ -148,6 +158,70 @@ test('ArtNetOutput maps app universe 1 to Art-Net port address 0', async () => {
   rx.sock.close();
   const ports = rx.packets.map(parseArtDmx).map((p) => p.portAddress).sort();
   assert.deepEqual(ports, [0, 2]);
+});
+
+test('ArtPollReply matches the Art-Net 4 layout and answers a real poll', async () => {
+  const p = parseArtPollReply(
+    writeArtPollReply({
+      ip: [10, 0, 0, 7],
+      mac: [1, 2, 3, 4, 5, 6],
+      longName: 'Test desk',
+      net: 1,
+      subNet: 2,
+      portAddresses: [0x120, 0x121],
+      bindIndex: 3,
+    }),
+  );
+  assert.ok(p, 'reply parses');
+  assert.deepEqual(p.ip, [10, 0, 0, 7]);
+  assert.equal(p.port, 6454, 'the reply advertises the Art-Net port, little-endian');
+  assert.equal(p.net, 1);
+  assert.equal(p.subNet, 2);
+  assert.equal(p.ports, 2);
+  assert.deepEqual(p.portTypes.slice(0, 2), [0x80, 0x80], 'output, DMX512');
+  assert.deepEqual(p.goodOutput.slice(0, 2), [0x80, 0x80], 'data is being transmitted');
+  assert.deepEqual(p.swOut.slice(0, 2), [0, 1], 'low nibble of each port address');
+  assert.equal(p.style, 1, 'StController');
+  assert.deepEqual(p.mac, [1, 2, 3, 4, 5, 6]);
+  assert.equal(p.bindIndex, 3);
+  assert.equal(p.status2 & 0x08, 0x08, 'speaks Art-Net 3/4');
+  assert.equal(p.longName, 'Test desk');
+
+  // ArtDmx must not be mistaken for a poll.
+  assert.equal(isArtPoll(writeArtDmx(Buffer.alloc(ARTDMX_SIZE), { portAddress: 0, data: null })), false);
+
+  // End to end over UDP: poll in, replies out, four ports to a packet.
+  const port = 36454; // not 6454, so the test never competes with real Art-Net software
+  const out = new ArtNetOutput({
+    universes: [1, 2, 3, 4, 5, 6],
+    host: '127.0.0.1',
+    universeOffset: -1,
+    discoveryPort: port,
+    sourceName: 'Unit desk',
+  });
+  await out.open();
+  const poll = Buffer.alloc(14);
+  Buffer.from('Art-Net\0', 'latin1').copy(poll, 0);
+  poll.writeUInt16LE(0x2000, 8);
+  poll.writeUInt16BE(14, 10);
+  assert.equal(isArtPoll(poll), true);
+
+  const replies = [];
+  const asker = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  asker.on('message', (m) => replies.push(Buffer.from(m)));
+  await new Promise((r) => asker.bind(0, '127.0.0.1', r));
+  asker.send(poll, 0, poll.length, port, '127.0.0.1');
+  await new Promise((r) => setTimeout(r, 300));
+  asker.close();
+  await out.close();
+
+  const parsed = replies.map(parseArtPollReply).filter(Boolean);
+  assert.equal(parsed.length, 2, `six universes need two replies, got ${parsed.length}`);
+  assert.deepEqual(parsed.map((r) => r.ports), [4, 2]);
+  assert.deepEqual(parsed.map((r) => r.bindIndex), [1, 2], 'each reply says which of the set it is');
+  assert.deepEqual(parsed[0].swOut, [0, 1, 2, 3]);
+  assert.deepEqual(parsed[1].swOut.slice(0, 2), [4, 5]);
+  assert.equal(parsed[0].longName, 'Unit desk');
 });
 
 test('CID parsing rejects malformed UUIDs', () => {

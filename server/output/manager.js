@@ -39,7 +39,7 @@ export class OutputManager {
         cfg.type === 'sacn'
           ? new SacnOutput({ ...cfg, cid, sourceName: config.sourceName })
           : cfg.type === 'artnet'
-            ? new ArtNetOutput(cfg)
+            ? new ArtNetOutput({ ...cfg, sourceName: config.sourceName })
             : null;
       if (!out) continue;
       out.id = cfg.id;
