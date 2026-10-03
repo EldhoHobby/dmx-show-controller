@@ -30,8 +30,11 @@ export function livePlan(auto, { style = 'balanced', seed = 0 } = {}, now) {
   const paletteIndex = label === 'breakdown' || label === 'intro'
     ? COOL[drops % 2]
     : (seed + 2 * drops + (label === 'groove' ? 1 : 0)) % PALETTES.length;
+  // Quantized so it can go in the cache key below without rebuilding the look every frame.
+  // Twelve steps is finer than the eye reads across the 0.8..1.2 brightness lift it drives.
+  const energy = Math.round(clamp(auto?.energy ?? 0.6, 0, 1) * 12) / 12;
   const look = sectionLook(label, {
-    energy: auto?.energy ?? 0.6,
+    energy,
     phrase,
     palette: PALETTES[paletteIndex].colors,
     style: st,
@@ -50,8 +53,10 @@ export function livePlan(auto, { style = 'balanced', seed = 0 } = {}, now) {
     look,
     beat,
     beatMs,
-    // Cache key for the prepared layers: everything the look depends on.
-    key: `${style}|${label}|${phrase % 12}|${paletteIndex}|${g ? `${g.kick}${g.backbeat ? 'b' : ''}${g.hats ? 'h' : ''}` : '-'}|${section === 'quiet' ? 'q' : ''}`,
+    // Cache key for the prepared layers: everything the look depends on. Energy belongs here
+    // because sectionLook scales every layer's level by it — leaving it out froze the
+    // brightness at whichever energy happened to arrive first in the phrase.
+    key: `${style}|${label}|${phrase % 12}|${paletteIndex}|${g ? `${g.kick}${g.backbeat ? 'b' : ''}${g.hats ? 'h' : ''}` : '-'}|${section === 'quiet' ? 'q' : ''}|${energy}`,
     // A new part fades in over a beat; a drop cuts in on the hit.
     alpha: label === 'drop' ? 1 : clamp((now - (auto?.sectionSince ?? -Infinity)) / beatMs, 0, 1),
     // Pulses on the washes follow the real kick when the look pulses on every beat.

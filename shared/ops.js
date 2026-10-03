@@ -99,7 +99,16 @@ export function applyOp(show, op) {
         for (let i = inverses.length - 1; i >= 0; i--) applyOp(show, inverses[i]);
         throw err;
       }
-      return { type: 'batch', ops: inverses.reverse() };
+      // fixture.remove and track.remove each undo as a batch of their own. Nesting is refused
+      // above, so those are flattened into one list here: undo sends this inverse straight
+      // back as an operation, and a batch of batches could never be applied.
+      const ops = [];
+      for (let i = inverses.length - 1; i >= 0; i--) {
+        const inv = inverses[i];
+        if (inv?.type === 'batch') ops.push(...inv.ops);
+        else ops.push(inv);
+      }
+      return { type: 'batch', ops };
     }
 
     case 'show.replace': {
@@ -224,15 +233,21 @@ export function applyOp(show, op) {
       if (tracks.length <= 1) fail('The timeline needs at least one track');
       const i = indexById(tracks, op.id, 'Track');
       const [prev] = tracks.splice(i, 1);
+      // Each clip remembers where it sat, so undo puts it back in place rather than at the
+      // end. Ascending order matters: every insert lands correctly once the earlier ones have.
       const removed = [];
-      show.timeline.clips = show.timeline.clips.filter((c) => {
-        if (c.track !== op.id) return true;
-        removed.push(c);
-        return false;
+      const kept = [];
+      show.timeline.clips.forEach((c, index) => {
+        if (c.track === op.id) removed.push({ clip: c, index });
+        else kept.push(c);
       });
+      show.timeline.clips = kept;
       return {
         type: 'batch',
-        ops: [{ type: 'track.add', track: prev, index: i }, ...removed.map((c) => ({ type: 'clip.add', clip: c }))],
+        ops: [
+          { type: 'track.add', track: prev, index: i },
+          ...removed.map(({ clip, index }) => ({ type: 'clip.add', clip, index })),
+        ],
       };
     }
 

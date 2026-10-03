@@ -80,7 +80,7 @@ function stateValues(rec, s, wallMs, ownDimmer) {
 
 // Cells of a pixel profile that have a dimmer channel of their own.
 const CELL_DIMMERS = new WeakMap();
-function cellDimmers(profile) {
+export function cellDimmers(profile) {
   let set = CELL_DIMMERS.get(profile);
   if (!set) {
     set = new Set(profile.channels.filter((c) => c.attr === 'dimmer' && Number.isInteger(c.cell)).map((c) => c.cell));
@@ -134,10 +134,15 @@ export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile
         break;
       default: {
         let v = vals[ch.attr] ?? 0;
+        const atZero = v <= 0;
         if (ch.invert) v = 1 - v;
         if (rec.fineAttrs.has(ch.attr)) {
           const v16 = Math.round(v * 65535);
           dmx = ch.fine ? v16 & 255 : v16 >> 8;
+        } else if (atZero && ch.off !== undefined) {
+          // A profile that declares a separate "off" value — an imported dimmer with an off
+          // band below its fade range — goes there rather than to the bottom of the range.
+          dmx = ch.off;
         } else {
           const lo = ch.min ?? 0;
           const hi = ch.max ?? 255;

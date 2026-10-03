@@ -95,10 +95,21 @@ function convertChannel(ofl, key, def, info) {
     return fixed();
   }
   if (types.has('Intensity') && caps.length <= 2) {
-    const cap = caps.find((c) => c.type === 'Intensity');
-    const [lo, hi] = Array.isArray(cap.dmxRange) ? cap.dmxRange : [0, 255];
+    // Span every Intensity capability rather than just the first. A dimmer written as an
+    // "off" range plus a fade range (0-9 off, 10-255 fade) would otherwise take 0-9 as the
+    // whole channel, so full intensity sent DMX 9 and the light never came on at any level.
+    const intensity = caps.filter((c) => c.type === 'Intensity');
+    const isOff = (c) => c.brightness === 'off' || (c.brightnessStart === 'off' && c.brightnessEnd === 'off');
+    const span = intensity.filter((c) => !isOff(c));
+    const ranges = (span.length ? span : intensity).map((c) => (Array.isArray(c.dmxRange) ? c.dmxRange : [0, 255]));
+    const lo = Math.min(...ranges.map((r) => r[0]));
+    const hi = Math.max(...ranges.map((r) => r[1]));
     const ch = { attr: 'dimmer', label };
     if (lo !== 0 || hi !== 255) Object.assign(ch, { min: lo, max: hi });
+    // Where the file declares an explicit off band, intensity 0 goes there instead of to the
+    // bottom of the fade range, which on these fixtures is a faint glow rather than dark.
+    const offCap = intensity.find((c) => isOff(c) && Array.isArray(c.dmxRange));
+    if (offCap && span.length) ch.off = offCap.dmxRange[0];
     return ch;
   }
   if (types.has('ShutterStrobe')) {
@@ -243,7 +254,10 @@ export function importOflFixture(ofl, { modeIndex = 0, manufacturer = '' } = {})
   const cellInfo = new Map();
   const infoFor = (cell) => {
     if (cell == null) return info;
-    if (!cellInfo.has(cell)) cellInfo.set(cell, { ...info, usedColors: new Set() });
+    // Each cell gets its own sets. Spreading `info` shared its usedWheels by reference, so
+    // one pixel claiming a wheel slot blocked every other pixel from claiming its own. It
+    // also snapshotted panRange/tiltRange before they were necessarily written.
+    if (!cellInfo.has(cell)) cellInfo.set(cell, { usedColors: new Set(), usedWheels: new Set() });
     return cellInfo.get(cell);
   };
   const converted = new Map();

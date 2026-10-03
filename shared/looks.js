@@ -55,15 +55,23 @@ export function labelName(label) {
 export function readGroove(drums, beats, barPos) {
   if (!drums?.kick?.length || !beats.length) return null;
   const at = (arr, i) => arr?.[i] ?? 0;
-  const byPos = [[], [], [], []];
+  // Grown as needed rather than fixed at four: barPos returns 0..beatsPerBar-1, and the show
+  // format allows 1..16 beats to the bar. A fixed four threw on anything but 2/4, 3/4 or 4/4.
+  const byPos = [];
   let kicks = 0;
   for (const i of beats) {
     const hit = at(drums.kick, i) >= 0.3;
     if (hit) kicks++;
-    byPos[barPos(i)].push(hit ? 1 : 0);
+    (byPos[barPos(i)] ||= []).push(hit ? 1 : 0);
   }
   const rate = kicks / beats.length;
-  const posRate = byPos.map((list) => (list.length ? list.reduce((s, v) => s + v, 0) / list.length : 0));
+  // The patterns below ask about the first four beats of the bar; a longer bar simply has
+  // beats these heuristics do not consider.
+  const share = (p) => {
+    const list = byPos[p];
+    return list?.length ? list.reduce((s, v) => s + v, 0) / list.length : 0;
+  };
+  const posRate = [share(0), share(1), share(2), share(3)];
   let kick = 'broken';
   if (rate < 0.15) kick = 'none';
   else if (rate >= 0.75) kick = 'four';

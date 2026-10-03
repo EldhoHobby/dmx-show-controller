@@ -53,6 +53,25 @@ test('raw channel values land exactly, but blackout and the grand master still g
   assert.equal(dmx[5], 77, 'non-intensity channels keep their value in blackout');
 });
 
+test('a raw channel moves only its own channel, not the rest of the fixture', () => {
+  const show = rig();
+  // 'rgb' has no dimmer channel, so intensity rides on its colour channels. Mirroring the
+  // raw byte back into the state used to seed the untouched components from the state's hue
+  // ([1,1,1] by default), which drove them to full: dragging Red alone turned the par white.
+  let { dmx } = frame(show, { master: 1, programmer: { attrs: {}, raw: { rgb: { 0: 255 } } } });
+  assert.deepEqual([...dmx.slice(19, 22)], [255, 0, 0], 'red only');
+  ({ dmx } = frame(show, { master: 1, programmer: { attrs: {}, raw: { rgb: { 1: 200 } } } }));
+  assert.deepEqual([...dmx.slice(19, 22)], [0, 200, 0], 'green only');
+  ({ dmx } = frame(show, { master: 1, programmer: { attrs: {}, raw: { rgb: { 0: 255, 1: 100 } } } }));
+  assert.deepEqual([...dmx.slice(19, 22)], [255, 100, 0], 'two channels set, the third stays put');
+
+  // p1 is an RGBW par with a dimmer channel: its colour channels are independent of it.
+  ({ dmx } = frame(show, { master: 1, programmer: { attrs: {}, raw: { p1: { 1: 180 } } } }));
+  assert.equal(dmx[1], 180, 'red');
+  assert.equal(dmx[2], 0, 'green untouched');
+  assert.equal(dmx[3], 0, 'blue untouched');
+});
+
 test('raw values are mirrored into the 3D view', () => {
   const show = rig();
   // 16-bit pan: coarse 192, fine 0 = 75% of 540 degrees = +135 degrees from centre.
