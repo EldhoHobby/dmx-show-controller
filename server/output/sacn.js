@@ -169,7 +169,8 @@ export class SacnOutput {
       if (!this.ready || !this.socket) return;
       const to = this.cfg.mode === 'unicast' && this.cfg.unicast ? this.cfg.unicast : multicastAddress(DISCOVERY_UNIVERSE);
       for (const packet of discoveryPackets({ cid: this.cfg.cid, sourceName: this.sourceName, universes: this.cfg.universes })) {
-        this.socket.send(packet, SACN_PORT, to, (err) => {
+        // Same port as the data, so a forwarding tool on a non-standard port sees both.
+        this.socket.send(packet, this.cfg.port || SACN_PORT, to, (err) => {
           if (err) this.fail(err);
         });
       }
