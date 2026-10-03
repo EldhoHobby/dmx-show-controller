@@ -15,6 +15,10 @@ import { applyOp, isNoop } from '../shared/ops.js';
 export const now = () => performance.timeOrigin + performance.now();
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+// How much unsent show traffic a window may have queued before we give up on it. A whole
+// show replace is the largest single message and runs to a few hundred KB on a big show,
+// so this is roomy enough that only a window that has genuinely stopped reading hits it.
+const MAX_CLIENT_BACKLOG = 4 * 1024 * 1024;
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
 
 function emptyReactive() {
@@ -496,10 +500,31 @@ export class Session {
     if (client.conn.open) client.conn.send(JSON.stringify(obj));
   }
 
+  /**
+   * Send to every window. A socket whose backlog has run away is closed rather than fed.
+   *
+   * Dropping a message here is not an option the way it is for USB frames: the next frame
+   * replaces the last, but miss one `op` and that window's copy of the show is quietly
+   * wrong for the rest of the night. So the socket goes, and the client's own reconnect
+   * brings it back with a `welcome` that re-sends the show in full.
+   *
+   * Without this, one window that stops reading — a laptop asleep, a tab the OS has frozen,
+   * a half-open Wi-Fi connection — grows the engine without limit: measured at 72 MB going
+   * to 983 MB after 156 MB of queued broadcasts, still climbing. DMX keeps flowing, so it
+   * is a slow death rather than an outage, which is worse: it kills a machine left running.
+   */
   broadcast(obj) {
     const text = JSON.stringify(obj);
-    // The live-audio worker only sends; keep its socket free of show traffic.
-    for (const c of this.clients.values()) if (c.conn.open && c.view !== 'audio') c.conn.send(text);
+    for (const c of this.clients.values()) {
+      // The live-audio worker only sends; keep its socket free of show traffic.
+      if (!c.conn.open || c.view === 'audio') continue;
+      if (c.conn.bufferedAmount > MAX_CLIENT_BACKLOG) {
+        this.log?.warn(`${c.name} stopped reading (${Math.round(c.conn.bufferedAmount / 1024)} KB queued); closing it so it can reconnect`);
+        c.conn.close(1008);
+        continue;
+      }
+      c.conn.send(text);
+    }
   }
 
   clientList() {

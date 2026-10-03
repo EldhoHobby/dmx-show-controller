@@ -192,3 +192,46 @@ test('media upload: two windows sending the same song at once both succeed, inta
   await new Promise((r) => server.close(r));
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test('a window that stops reading is closed, not fed until the engine runs out of memory', async () => {
+  // Measured before this guard: one socket that completes the handshake and never reads,
+  // while another window edits, took the engine from 72 MB to 383 MB on a short run and
+  // was still climbing with no ceiling. DMX kept flowing, so it kills a machine quietly
+  // over an evening rather than failing outright.
+  //
+  // Dropping the message is not an option the way it is for USB frames — the next frame
+  // replaces the last, but a missed `op` leaves that window's show silently wrong. So the
+  // socket is closed and the client's own reconnect re-syncs it with a fresh `welcome`.
+  const { Session } = await import('../server/session.js');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmx-backlog-'));
+  const session = new Session({ dataDir, log: { info() {}, warn() {}, error() {} } });
+
+  const makeClient = (id, backlog, view = 'design') => {
+    const sent = [];
+    const conn = {
+      open: true,
+      bufferedAmount: backlog,
+      send: (text) => sent.push(text),
+      close: () => {
+        conn.open = false;
+        conn.closed = true;
+      },
+    };
+    session.clients.set(id, { id, conn, name: id, view, usbUniverse: null, address: '127.0.0.1' });
+    return { conn, sent };
+  };
+
+  const healthy = makeClient('healthy', 0);
+  const asleep = makeClient('asleep', 8 * 1024 * 1024); // well past the ceiling
+  const nearly = makeClient('nearly', 1024 * 1024); // busy but keeping up
+
+  session.broadcast({ t: 'test', payload: 'x' });
+
+  assert.equal(healthy.sent.length, 1, 'a window that is reading still gets the message');
+  assert.equal(nearly.sent.length, 1, 'a merely busy window is not punished');
+  assert.equal(asleep.sent.length, 0, 'nothing more is queued onto the one that stopped reading');
+  assert.equal(asleep.conn.closed, true, 'and it is closed so it reconnects and re-syncs');
+  assert.equal(healthy.conn.closed, undefined);
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
