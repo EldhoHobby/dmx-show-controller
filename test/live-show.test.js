@@ -174,3 +174,37 @@ test('the moving heads do not snap when the phrase changes', () => {
   // A fast moving head manages a few hundred degrees a second; anything past that is a jump.
   assert.ok(worst < 400, `heads swing at ${worst.toFixed(0)} deg/s near beat ${worstBeat.toFixed(1)}`);
 });
+
+test('the washes follow the kick, not the bassline underneath it', () => {
+  // The low band is everything under 150 Hz, which is the kick and the bass together. In
+  // house music the bass sits on the off-beat, so every low hit firing a pulse made the
+  // washes flash about half as often again as the kick — the rig reading faster than the
+  // music. Hits off the clock's beat are dropped once there is a clock to judge them by.
+  const ev = createEvaluator(rig());
+  const P = 500;
+  const auto = snap({ section: 'drop', groove: { kick: 'four', backbeat: true, hats: true } });
+  const flashes = (withBass) => {
+    const lows = [];
+    for (let b = 0; b < 48; b++) {
+      lows.push(b * P);
+      if (withBass) lows.push((b + 0.5) * P);
+    }
+    let n = 0;
+    let lit = false;
+    for (let t = 0; t < 48 * P; t += 10) {
+      const last = lows.filter((x) => x <= t).pop() ?? null;
+      const states = ev.evaluate(0, { master: 1, autoShow: true, reactive: { ...reactive(auto), last: { low: last }, strength: { low: 1 } } }, t);
+      const d = Math.max(...washes.map((id) => states.get(id)?.dimmer ?? 0));
+      if (d > 0.55 && !lit) {
+        n++;
+        lit = true;
+      }
+      if (d < 0.35) lit = false;
+    }
+    return n;
+  };
+  const kickOnly = flashes(false);
+  const withBass = flashes(true);
+  assert.ok(kickOnly > 20, `the washes should follow the kick at all, got ${kickOnly}`);
+  assert.equal(withBass, kickOnly, `an off-beat bass added ${withBass - kickOnly} extra flashes`);
+});

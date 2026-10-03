@@ -21,6 +21,7 @@
 import { createTempo } from './tempo.js';
 import { cellOffsets, fixtureRole, panRange, profileCaps, resolveProfile, tiltRange } from './fixture-library.js';
 import { livePlan } from './live-show.js';
+import { liveBeat } from './analysis/live-tracker.js';
 import { aimAt, rotationMatrix } from './kinematics.js';
 import { hsvToRgb, isColor } from './color.js';
 import { cellDimmers } from './dmx-render.js';
@@ -608,7 +609,9 @@ export function createEvaluator(show) {
   const trackOrder = new Map(show.timeline.tracks.map((tr, i) => [tr.id, i]));
   const muted = new Set(show.timeline.tracks.filter((tr) => tr.muted).map((tr) => tr.id));
   const prepared = show.timeline.clips
-    .filter((c) => trackOrder.has(c.track) && !muted.has(c.track) && c.end > c.start && HANDLERS[c.type])
+    // hasOwn: a clip type of "__proto__" or "toString" reads back truthy from HANDLERS and
+    // would then be called as if it were a handler.
+    .filter((c) => trackOrder.has(c.track) && !muted.has(c.track) && c.end > c.start && Object.hasOwn(HANDLERS, c.type))
     .map((c) => prepareClip(c, byId))
     .sort((a, b) => trackOrder.get(a.clip.track) - trackOrder.get(b.clip.track) || a.clip.start - b.clip.start);
   const scenesById = new Map((show.scenes || []).map((s) => [s.id, s]));
@@ -647,10 +650,20 @@ export function createEvaluator(show) {
   };
   const virtualClip = (name, type, params, targets) => prepareClip({ id: `auto-${name}`, type, params, fixtures: targets, start: 0, end: Infinity, fadeIn: 0, fadeOut: 0 }, byId);
 
-  /** A pulse fired by the real drum hit in a band, decaying over decayMs. */
-  function hitPulse(pc, rt, band, decayMs, alpha, states, now) {
+  /**
+   * A pulse fired by the real drum hit in a band, decaying over decayMs.
+   *
+   * `onBeat` drops hits that do not land on the beat clock. The low band is everything
+   * under 150 Hz, which is the kick *and* the bassline, and in house music the bass is on
+   * the off-beat — so the washes were flashing about one and a half times per kick, which
+   * reads as the rig running faster than the music. Only applied once the clock is running
+   * and only to the layers that are meant to follow the drum; with no clock, every hit
+   * still fires, because an unfiltered pulse beats no pulse at all.
+   */
+  function hitPulse(pc, rt, band, decayMs, alpha, states, now, onBeat = null) {
     const env = onsetEnvelope(rt, band, decayMs, now);
     if (env <= 0) return;
+    if (onBeat && !onBeat(rt?.last?.[band])) return;
     const level = num(pc.clip.params.level, 1);
     for (const { rec } of pc.members) setDimmer(states.get(rec.id), level * env, alpha, 'htp');
   }
@@ -666,18 +679,33 @@ export function createEvaluator(show) {
     });
     const a = plan.alpha;
     const run = (pc) => pc && HANDLERS[pc.clip.type](pc, now, plan.beat, a, states);
+    // A hit counts as on the beat within 0.3 of one. The thing being excluded sits a full
+    // half beat away, so this still drops it comfortably, while leaving room for a kick
+    // that a human hears as on time but that the clock puts a little early or late — the
+    // pulse is meant to follow the drum, not the grid.
+    //
+    // Safe when the clock's phase is wrong, which does happen: a misphased clock stops
+    // kicks matching it, the groove reads as broken, and a broken groove gives the washes
+    // a chase rather than a kick pulse — so this gate is not consulted at all.
+    const onBeat = auto?.period > 0
+      ? (at) => {
+          if (at == null) return false;
+          const b = liveBeat(auto, at);
+          return b != null && Math.abs(b - Math.round(b)) <= 0.3;
+        }
+      : null;
     run(L.base);
     if (plan.build) {
       for (const id of liveTargets.base) for (const sid of expand(id)) setDimmer(states.get(sid), plan.build.level, a, 'htp');
       const step = plan.build.step;
       run(livePrepared(`build|${step}`, () => virtualClip('build', 'chase', { step, direction: 'forward', width: step <= 0.25 ? 2 : 1, tail: step <= 0.25 ? 0 : 1, level: 0.9, order: step <= 0.25 ? 'center' : 'x', dimmerMode: 'htp' }, liveWashes)));
     } else if (L.rhythm) {
-      if (plan.kickPulse) hitPulse(L.rhythm, rt, 'low', num(L.rhythm.clip.params.decay, 0.6) * plan.beatMs, a, states, now);
+      if (plan.kickPulse) hitPulse(L.rhythm, rt, 'low', num(L.rhythm.clip.params.decay, 0.6) * plan.beatMs, a, states, now, onBeat);
       else run(L.rhythm);
     }
     if (L.sparkle) hitPulse(L.sparkle, rt, 'high', 0.25 * plan.beatMs, a, states, now);
     run(L.beams);
-    if (L.backbeat) hitPulse(L.backbeat, rt, 'mid', 0.35 * plan.beatMs, a, states, now);
+    if (L.backbeat) hitPulse(L.backbeat, rt, 'mid', 0.35 * plan.beatMs, a, states, now, onBeat);
     run(L.move);
     run(L.color);
     // The drop hit (and a softer one when the kick comes back): full white, fading out.
