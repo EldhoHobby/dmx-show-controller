@@ -71,7 +71,7 @@ adapter. You set them up fresh in step 5.
    tablets).
 2. Windows may ask whether Node.js may use the network: allow it on **Private** networks.
    Without this, no DMX leaves the computer.
-3. The black engine window should say **DMX Show Controller 0.3.4** (or newer) and **Running at
+3. The black engine window should say **DMX Show Controller 0.3.5** (or newer) and **Running at
    high priority**. The app opens in your browser. Use Chrome or Edge.
 
 Leave the engine window open while you work. Closing it stops the lights.
@@ -126,12 +126,12 @@ pushed.
 3. Start it again and check the version in the engine window.
 
 Do not update right before an event. If a new version misbehaves, go back to the previous
-one. Each version has a tag; `git tag` lists them, and the one below `v0.3.4` is `v0.3.3`:
+one. Each version has a tag; `git tag` lists them, and the one below `v0.3.5` is `v0.3.4`:
 
 ```bat
 cd C:\DMX\show
 git tag
-git checkout v0.3.3
+git checkout v0.3.4
 ```
 
 `update.bat` brings you back to the latest version later.
