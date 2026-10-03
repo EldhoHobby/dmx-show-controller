@@ -14,7 +14,9 @@ export const ORDER_OPTIONS = [
 
 const DIVISIONS = [
   [0.25, '1/16 (quarter beat)'],
+  [1 / 3, '1/8 triplet (third of a beat)'],
   [0.5, '1/8 (half beat)'],
+  [2 / 3, 'two triplets (2/3 beat)'],
   [1, '1/4 (one beat)'],
   [2, '1/2 (two beats)'],
   [4, '1 bar'],

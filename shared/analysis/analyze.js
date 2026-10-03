@@ -3,9 +3,12 @@
 // Pipeline
 //   1. mix to mono and decimate to ~22 kHz
 //   2. STFT (1024/256) -> log-magnitude spectral flux per band, loudness per frame
-//   3. tempo: autocorrelation of the onset envelope with a log-normal prior around 120 BPM
-//   4. beats: dynamic-programming beat tracker (Ellis 2007), then regularized: a steady track
-//      gets an exact least-squares grid, a drifting one keeps the tracked beats
+//   3. tempo through the song (tempo-map.js): autocorrelation in 8 s windows with a broad
+//      preference for 120 BPM, joined into a path that holds steady but follows a real change
+//      (mashups and medleys change tempo between songs)
+//   4. beats: dynamic-programming beat tracker (Ellis 2007) following that tempo, then
+//      regularized: each steady stretch gets an exact least-squares grid, a drifting one
+//      keeps the tracked beats
 //   5. downbeat phase from where energy changes land (phrases change on bar lines)
 //   6. sections from bar-level novelty, snapped to 4/8-bar phrases; labelled by energy
 //   7. drum pattern per beat: kick and snare on the beat, hi-hat on the off-beat
@@ -13,9 +16,10 @@
 // Runs in a Web Worker in the browser and directly in Node for tests. Pure JS, no DOM.
 
 import { createFFT, hannWindow } from './fft.js';
+import { tempoMap } from './tempo-map.js';
 import { clamp, median } from '../util.js';
 
-export const ANALYSIS_VERSION = 2;
+export const ANALYSIS_VERSION = 3;
 
 const FFT_SIZE = 1024;
 const HOP = 256;
@@ -38,14 +42,15 @@ export function analyzeAudio(input, options = {}) {
 
   onProgress(0.66, 'Finding the tempo');
   const onsetN = detrend(feat.onset, Math.round(feat.frameRate * 0.5));
-  const tempo = estimateTempo(onsetN, feat.frameRate);
+  const map = tempoMap(onsetN, feat.frameRate, options.tempoDebug);
 
   onProgress(0.72, 'Tracking beats');
-  const local = gaussianSmooth(onsetN, Math.max(0.5, tempo.period / 32));
-  const tracked = trimBeats(trackBeats(local, tempo.period), local);
+  const local = gaussianSmooth(onsetN, Math.max(0.5, map.period / 32));
+  const tracked = trimBeats(trackBeats(local, map.periodAt), local);
   const frameMs = 1000 / feat.frameRate;
-  const trackedMs = tracked.map((f) => f * frameMs + ONSET_LATENCY_MS + (options.calibrationMs || 0));
-  const grid = regularizeBeats(trackedMs, durationMs, tempo.period * frameMs);
+  const latency = ONSET_LATENCY_MS + (options.calibrationMs || 0);
+  const trackedMs = tracked.map((f) => f * frameMs + latency);
+  const grid = regularizeBeats(trackedMs, durationMs, map, frameMs);
 
   onProgress(0.82, 'Measuring energy');
   const perBeat = perBeatFeatures(grid.beats, feat);
@@ -54,6 +59,9 @@ export function analyzeAudio(input, options = {}) {
   onProgress(0.9, 'Finding sections');
   const debug = options.debug ? {} : null;
   const sections = segmentSections(grid.beats, downbeat, perBeat, 4, durationMs, debug);
+  sectionFeel(grid.beats, feat, sections, debug).forEach((feel, i) => {
+    if (feel === 'triplet') sections[i].feel = feel;
+  });
   const drops = sections.filter((s) => s.label === 'drop').map((s) => s.start);
   const drums = drumPattern(grid.beats, feat, debug);
 
@@ -65,6 +73,7 @@ export function analyzeAudio(input, options = {}) {
     sampleRate,
     bpm: round(grid.bpm, 2),
     steadyTempo: grid.steady,
+    tempos: grid.tempos.map((x) => ({ start: round(x.start, 1), bpm: round(x.bpm, 2) })),
     confidence: round(clamp((salience - 1) / 1.5, 0, 1), 2),
     beats: grid.beats.map((t) => round(t, 1)),
     downbeat,
@@ -76,7 +85,10 @@ export function analyzeAudio(input, options = {}) {
     peaks: waveformPeaks(mono, 2048),
     onsets: pickOnsets(onsetN, feat.frameRate),
   };
-  if (debug) result._debug = debug;
+  if (debug) {
+    debug.tempoMap = map.segments.map((s) => ({ from: round(s.from * frameMs, 0), to: round(s.to * frameMs, 0), bpm: round((60 * feat.frameRate) / s.period, 2) }));
+    result._debug = debug;
+  }
   onProgress(1, 'Done');
   return result;
 }
@@ -256,47 +268,12 @@ function gaussianSmooth(x, sigma) {
   return out;
 }
 
-// ---- 3. Tempo ----------------------------------------------------------------------------
-
-function estimateTempo(o, frameRate) {
-  const n = o.length;
-  const minLag = Math.max(2, Math.floor((60 * frameRate) / 200));
-  const maxLag = Math.min(n - 2, Math.ceil((60 * frameRate) / 60));
-  const L = Math.min(n - 1, maxLag * 2 + 2);
-  const ac = new Float64Array(L + 1);
-  for (let lag = 1; lag <= L; lag++) {
-    let s = 0;
-    for (let t = 0, m = n - lag; t < m; t++) s += o[t] * o[t + lag];
-    ac[lag] = s / (n - lag);
-  }
-  const score = new Float64Array(L + 2);
-  for (let lag = minLag; lag <= maxLag; lag++) {
-    const bpm = (60 * frameRate) / lag;
-    const prior = Math.exp(-0.5 * (Math.log2(bpm / 120) / 0.9) ** 2);
-    score[lag] = prior * (ac[lag] + 0.5 * (2 * lag <= L ? ac[2 * lag] : 0));
-  }
-  let best = minLag;
-  for (let lag = minLag; lag <= maxLag; lag++) if (score[lag] > score[best]) best = lag;
-  let period = best;
-  if (best > minLag && best < maxLag) {
-    const a = score[best - 1];
-    const b = score[best];
-    const c = score[best + 1];
-    const denom = a - 2 * b + c;
-    if (denom < 0) period = best + (0.5 * (a - c)) / denom;
-  }
-  return { period, bpm: (60 * frameRate) / period };
-}
-
 // ---- 4. Beats ----------------------------------------------------------------------------
 
-function trackBeats(local, period) {
+/** Ellis' dynamic-programming beat tracker; the expected beat period may change per frame. */
+function trackBeats(local, periodAt) {
   const n = local.length;
   const tightness = 100;
-  const lo = Math.max(1, Math.round(period / 2));
-  const hi = Math.max(lo + 1, Math.round(period * 2));
-  const penalty = new Float64Array(hi + 1);
-  for (let d = lo; d <= hi; d++) penalty[d] = -tightness * Math.log(d / period) ** 2;
   const cum = new Float64Array(n);
   const back = new Int32Array(n).fill(-1);
   let maxLocal = 0;
@@ -304,10 +281,14 @@ function trackBeats(local, period) {
   const threshold = 0.01 * maxLocal;
   let firstBeat = true;
   for (let t = 0; t < n; t++) {
+    const period = periodAt[t];
+    const lo = Math.max(1, Math.round(period / 2));
+    const hi = Math.max(lo + 1, Math.round(period * 2));
     let best = -Infinity;
     let bi = -1;
     for (let p = Math.max(0, t - hi), end = t - lo; p <= end; p++) {
-      const v = cum[p] + penalty[t - p];
+      const d = Math.log((t - p) / period);
+      const v = cum[p] - tightness * d * d;
       if (v > best) {
         best = v;
         bi = p;
@@ -364,36 +345,17 @@ function trimBeats(beats, local) {
 }
 
 /**
- * Fill dropped beats, then either replace the beats with an exact grid (steady tempo, the
- * usual case for club music) or keep them (live drummer, tempo changes). Always extends the
- * grid over the whole song so quiet intros and outros still have beats to snap to.
+ * Least-squares line through (beat index, time) for the beats `idx`, with one round of
+ * outlier rejection. Steady when the beats sit close to it.
  */
-function regularizeBeats(trackedMs, durationMs, fallbackPeriodMs) {
-  let beats = trackedMs.slice();
-  if (beats.length < 4) {
-    const period = fallbackPeriodMs;
-    beats = [];
-    for (let t = 0; t <= durationMs; t += period) beats.push(t);
-    return { beats, bpm: 60000 / period, steady: true };
-  }
-  const med = median(beats.slice(1).map((t, i) => t - beats[i]));
-  const filled = [beats[0]];
-  for (let i = 1; i < beats.length; i++) {
-    const gap = beats[i] - filled[filled.length - 1];
-    const missing = Math.round(gap / med) - 1;
-    for (let k = 1; k <= missing && missing < 64; k++) filled.push(filled[filled.length - 1] + gap / (missing + 1));
-    filled.push(beats[i]);
-  }
-  beats = filled;
-
-  // Least-squares line through (index, time) with one round of outlier rejection.
-  const fit = (idx) => {
-    const n = idx.length;
+function fitBeatLine(beats, idx) {
+  const fit = (list) => {
+    const n = list.length;
     let sx = 0;
     let sy = 0;
     let sxx = 0;
     let sxy = 0;
-    for (const i of idx) {
+    for (const i of list) {
       sx += i;
       sy += beats[i];
       sxx += i * i;
@@ -402,30 +364,118 @@ function regularizeBeats(trackedMs, durationMs, fallbackPeriodMs) {
     const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
     return { slope, intercept: (sy - slope * sx) / n };
   };
-  let idx = beats.map((_, i) => i);
-  let line = fit(idx);
-  const resid = () => idx.map((i) => beats[i] - (line.intercept + line.slope * i));
-  const mad = median(resid().map(Math.abs)) || 1;
-  idx = idx.filter((i) => Math.abs(beats[i] - (line.intercept + line.slope * i)) < 4 * mad + 15);
-  if (idx.length >= 4) line = fit(idx);
-  const r = resid();
-  const residStd = Math.sqrt(r.reduce((s, v) => s + v * v, 0) / r.length);
-  const steady = residStd < Math.max(12, 0.05 * line.slope);
+  let use = idx;
+  let line = fit(use);
+  const off = (i) => beats[i] - (line.intercept + line.slope * i);
+  const mad = median(use.map((i) => Math.abs(off(i)))) || 1;
+  use = use.filter((i) => Math.abs(off(i)) < 4 * mad + 15);
+  if (use.length >= 4) line = fit(use);
+  const residStd = Math.sqrt(use.reduce((s, i) => s + off(i) ** 2, 0) / use.length);
+  return { ...line, steady: residStd < Math.max(12, 0.05 * line.slope) };
+}
 
-  let out;
-  if (steady) {
-    // Keep a first beat that lands a hair before 0 ms (a downbeat right at the song start).
-    const kStart = Math.ceil((-line.intercept - 0.3 * line.slope) / line.slope);
-    const kEnd = Math.floor((durationMs - line.intercept) / line.slope);
-    out = [];
-    for (let k = kStart; k <= kEnd; k++) out.push(line.intercept + line.slope * k);
-  } else {
-    out = beats.slice();
-    const period = median(out.slice(1).map((t, i) => t - out[i]));
-    while (out[0] - period >= 0) out.unshift(out[0] - period);
-    while (out[out.length - 1] + period <= durationMs) out.push(out[out.length - 1] + period);
+/**
+ * Fill dropped beats, then straighten each stretch of steady tempo from the tempo map: an
+ * exact grid where the tracked beats fit one (produced music, the usual case), the tracked
+ * beats where they wander (a live drummer, a DJ riding the pitch). Extends the grid over the
+ * whole song so quiet intros and outros still have beats to snap to.
+ * Returns the beats, the main tempo (of the longest stretch), whether the whole song keeps one
+ * steady tempo, and the tempo of each stretch.
+ */
+function regularizeBeats(trackedMs, durationMs, map, frameMs) {
+  const periodAt = (ms) => map.periodAt[clamp(Math.round(ms / frameMs), 0, map.periodAt.length - 1)] * frameMs;
+  if (trackedMs.length < 4) {
+    const period = map.period * frameMs;
+    const beats = [];
+    for (let t = 0; t <= durationMs; t += period) beats.push(t);
+    return { beats, bpm: 60000 / period, steady: true, tempos: [{ start: 0, bpm: 60000 / period }] };
   }
-  return { beats: out, bpm: 60000 / (steady ? line.slope : median(out.slice(1).map((t, i) => t - out[i]))), steady };
+  const beats = [trackedMs[0]];
+  for (let i = 1; i < trackedMs.length; i++) {
+    const prev = beats[beats.length - 1];
+    const gap = trackedMs[i] - prev;
+    const missing = Math.round(gap / periodAt((prev + trackedMs[i]) / 2)) - 1;
+    for (let k = 1; k <= missing && missing < 64; k++) beats.push(prev + (gap * k) / (missing + 1));
+    beats.push(trackedMs[i]);
+  }
+
+  // The tempo map's stretches, each with its beats and, if they keep a steady tempo, a line
+  // fitted away from its edges (the map places a change only to within a second or so).
+  const EDGE = 1500;
+  const last = map.segments.length - 1;
+  const segs = map.segments.map((seg, si) => {
+    const a = si === 0 ? -Infinity : seg.from * frameMs;
+    const b = si === last ? Infinity : seg.to * frameMs;
+    const idx = [];
+    beats.forEach((t, i) => {
+      if (t >= a && t < b) idx.push(i);
+    });
+    const core = idx.filter((i) => beats[i] >= a + EDGE && beats[i] < b - EDGE);
+    const line = core.length >= 12 ? fitBeatLine(beats, core) : idx.length >= 12 ? fitBeatLine(beats, idx) : null;
+    return { a, b, idx, line: line?.steady ? line : null };
+  });
+  const on = (line, i) => line.intercept + line.slope * i;
+  // Where two steady stretches meet, the tempo changes at the beat from which the second
+  // line fits the tracked beats better than the first.
+  for (let k = 0; k < last; k++) {
+    const [p, q] = [segs[k], segs[k + 1]];
+    if (!p.line || !q.line) continue;
+    const near = [...p.idx, ...q.idx].filter((i) => Math.abs(beats[i] - q.a) < 3000);
+    let cut = 0;
+    let best = Infinity;
+    for (let c = 0; c <= near.length; c++) {
+      let cost = 0;
+      near.forEach((i, j) => {
+        cost += Math.abs(beats[i] - on(j < c ? p.line : q.line, i));
+      });
+      if (cost < best) {
+        best = cost;
+        cut = c;
+      }
+    }
+    const toP = new Set(near.slice(0, cut));
+    p.idx = [...p.idx.filter((i) => !near.includes(i)), ...toP].sort((x, y) => x - y);
+    q.idx = [...near.filter((i) => !toP.has(i)), ...q.idx.filter((i) => !near.includes(i))].sort((x, y) => x - y);
+  }
+
+  const out = [];
+  const stretches = [];
+  let steady = segs.length === 1;
+  for (const { a, b, idx, line } of segs) {
+    if (!idx.length) continue;
+    if (!line) steady = false;
+    const first = out.length;
+    for (const i of idx) {
+      const t = line ? on(line, i) : beats[i];
+      // Where two stretches meet, never two beats on top of each other.
+      if (!out.length || t - out[out.length - 1] > 0.4 * periodAt(t)) out.push(t);
+    }
+    if (out.length - first < 2) continue;
+    const period = line ? line.slope : median(out.slice(first + 1).map((t, k) => t - out[first + k]));
+    // How much of the song this tempo covers (the first and last run to the song's ends).
+    const span = Math.min(b, durationMs) - Math.max(a, 0);
+    stretches.push({ start: out[first], span, period, line });
+  }
+
+  // Out to the song's start and end at the tempo of the first and last stretch.
+  const head = stretches[0];
+  const tail = stretches[stretches.length - 1];
+  if (head.line) {
+    // Keep a first beat that lands a hair before 0 ms (a downbeat right at the song start).
+    const { slope, intercept } = head.line;
+    const k0 = Math.round((out[0] - intercept) / slope);
+    for (let k = k0 - 1; intercept + slope * k >= -0.3 * slope; k--) out.unshift(intercept + slope * k);
+  } else {
+    while (out[0] - head.period >= 0) out.unshift(out[0] - head.period);
+  }
+  while (out[out.length - 1] + tail.period <= durationMs) out.push(out[out.length - 1] + tail.period);
+  const main = stretches.reduce((m, s) => (s.span > m.span ? s : m), stretches[0]);
+  return {
+    beats: out,
+    bpm: 60000 / main.period,
+    steady,
+    tempos: stretches.map((s, i) => ({ start: i === 0 ? 0 : s.start, bpm: 60000 / s.period })),
+  };
 }
 
 function beatSalience(local, beatFrames) {
@@ -565,6 +615,48 @@ function drumPattern(beatsMs, feat, debug = null) {
     return values.map((v) => (v < floor ? 0 : round(clamp(v / ref, 0, 1), 2)));
   };
   return { kick: scale(kick, DRUM_SCALE.kick), snare: scale(snare, DRUM_SCALE.snare), hat: scale(hat, DRUM_SCALE.hat) };
+}
+
+/**
+ * Straight or triplet, per section: where the onsets between the beats fall. A shuffle, a
+ * 6/8 or 12/8 part puts them on the thirds of the beat; most pop and dance music on the
+ * halves and quarters. The generator steps its chases and flicks to match.
+ */
+function sectionFeel(beatsMs, feat, sections, debug = null) {
+  const frameMs = 1000 / feat.frameRate;
+  // The drums set the feel, not the melody: kick, snare and hi-hat bands, each to unit mean.
+  const unit = (arr) => {
+    let s = 0;
+    for (let f = 0; f < arr.length; f++) s += arr[f];
+    return arr.length / (s || 1);
+  };
+  const [kLow, kMid, kHigh] = [unit(feat.onsetLow), unit(feat.onsetMid), unit(feat.onsetHigh)];
+  const drum = (f) => feat.onsetLow[f] * kLow + feat.onsetMid[f] * kMid + feat.onsetHigh[f] * kHigh;
+  return sections.map((s) => {
+    // Average onset strength at 12 places in the beat, over the whole section.
+    const sum = new Float64Array(12);
+    const cnt = new Float64Array(12);
+    let i = 0;
+    for (let f = 0; f < feat.frames; f++) {
+      const t = f * frameMs + ONSET_LATENCY_MS;
+      if (t < s.start || t >= s.end) continue;
+      while (i + 1 < beatsMs.length && beatsMs[i + 1] <= t) i++;
+      if (i + 1 >= beatsMs.length || t < beatsMs[i]) continue;
+      const pos = Math.round(((t - beatsMs[i]) / (beatsMs[i + 1] - beatsMs[i])) * 12) % 12;
+      sum[pos] += drum(f);
+      cnt[pos]++;
+    }
+    const v = Array.from(sum, (x, k) => x / (cnt[k] || 1));
+    const mean = v.reduce((p, q) => p + q, 0) / 12 || 1;
+    const r = v.map((x) => x / mean);
+    // Both thirds must stand out, above the halves and quarters: music with hits all over the
+    // beat, or a swung 16th here and there, stays straight.
+    const thirds = Math.min(r[4], r[8]);
+    const halves = Math.max(r[6], (r[3] + r[9]) / 2);
+    const enough = beatsMs.filter((b) => b >= s.start && b < s.end).length >= 8;
+    if (debug) (debug.feel ||= []).push({ start: s.start, profile: r.map((x) => round(x, 2)), thirds: round(thirds, 2), halves: round(halves, 2) });
+    return enough && thirds > 1.1 && thirds >= 1.2 * halves ? 'triplet' : 'straight';
+  });
 }
 
 // ---- 6. Sections -------------------------------------------------------------------------

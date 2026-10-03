@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeAudio } from '../shared/analysis/analyze.js';
 import { synthesizeDemo } from '../tools/make-demo-audio.js';
-import { generateShow } from '../shared/autogen.js';
+import { generateShow, toThirds } from '../shared/autogen.js';
 import { readGroove } from '../shared/looks.js';
 import { createShow } from '../shared/show.js';
 import { applyOp } from '../shared/ops.js';
@@ -34,7 +34,7 @@ const beatsOf = (s) => A.beats.map((b, i) => [b, i]).filter(([b]) => b >= s.star
 const barPos = (i) => (((i - A.downbeat) % 4) + 4) % 4;
 
 test('song analysis reads the drum pattern of each section', () => {
-  assert.equal(A.version, 2);
+  assert.equal(A.version, 3);
   const grooves = A.sections.map((s) => [s.label, readGroove(A.drums, beatsOf(s), barPos)]);
   const kickOf = (label) => grooves.filter(([l]) => l === label).map(([, g]) => g.kick);
   assert.deepEqual(kickOf('intro'), ['none'], 'the intro has hi-hats and pads but no kick');
@@ -152,4 +152,17 @@ test('a pulse offset moves the hits: every 2 beats, offset 1 = beats 2 and 4', (
   const at = (beat) => ev.evaluate(beat * 500 + 1).get('p').dimmer;
   assert.ok(at(1) > 0.95 && at(3) > 0.95, 'hits on beats 2 and 4');
   assert.ok(at(0) < 0.05 && at(2) < 0.05, 'nothing on 1 and 3');
+});
+
+test('a triplet section (shuffle, 6/8) steps its chases and flicks on the thirds of the beat', () => {
+  assert.deepEqual(toThirds({ step: 0.5, offset: 0.5, level: 1 }), { step: 2 / 3, offset: 2 / 3, level: 1 });
+  assert.deepEqual(toThirds({ division: 0.25, offset: 1.25 }), { division: 1 / 3, offset: 1 + 1 / 3 });
+  assert.deepEqual(toThirds({ step: 2, division: 1, offset: 1 }), { step: 2, division: 1, offset: 1 }, 'whole beats stay');
+
+  const show = synthetic({ kick: () => 0.9, hat: () => 0.6 });
+  show.analysis.sections[0].feel = 'triplet';
+  const clips = generateShow(show).clips;
+  const subBeat = clips.flatMap((c) => ['step', 'division', 'offset'].map((k) => c.params[k] % 1)).filter((v) => v > 1e-9);
+  assert.ok(subBeat.length > 0, 'the look has off-beat parts');
+  for (const v of subBeat) assert.ok([1 / 6, 1 / 3, 2 / 3].some((x) => Math.abs(v - x) < 1e-9), `sub-beat value ${v}`);
 });

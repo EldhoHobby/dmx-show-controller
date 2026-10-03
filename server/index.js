@@ -16,8 +16,28 @@ import { loadConfig, normalizeConfig, saveConfig } from './config.js';
 import { attachWebSocketServer } from './ws-server.js';
 import { createRequestHandler, sameOrigin } from './http.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.2';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The engine needs little processor time (about 1 ms a frame), but it needs it on time. On a
+ * laptop kept at 100 % by browsers drawing 3D views, a normal-priority engine waited up to
+ * half a second for its turn: frames dropped to 8-20 a second and live-audio hits were held
+ * back. High priority (allowed without administrator rights on Windows) lets it run when it
+ * asks; it never spins, so the rest of the computer does not notice. Returns the level set.
+ */
+function raisePriority() {
+  const { PRIORITY_HIGH, PRIORITY_ABOVE_NORMAL } = os.constants.priority;
+  for (const [level, name] of [[PRIORITY_HIGH, 'high'], [PRIORITY_ABOVE_NORMAL, 'above-normal']]) {
+    try {
+      os.setPriority(0, level);
+      return name;
+    } catch {
+      /* not allowed here (Linux and macOS need root to raise it): try the next */
+    }
+  }
+  return null;
+}
 
 function parseArgs(argv) {
   const args = { port: 8080, host: '127.0.0.1', data: root };
@@ -156,6 +176,9 @@ async function main() {
     engine.start();
     const local = `http://${args.host === '0.0.0.0' ? 'localhost' : args.host}:${args.port}/`;
     log.info(`DMX Show Controller ${VERSION} (Node ${process.version})`);
+    const priority = raisePriority();
+    if (priority) log.info(`Running at ${priority} priority, so the lights keep time while the computer is busy.`);
+    else log.warn('Could not raise the engine\'s priority: on a busy computer the lights may stutter.');
     log.info(`Open ${local} in Chrome, Edge or Firefox.`);
     if (args.host === '0.0.0.0') {
       const lan = getInfo().lan;
@@ -172,7 +195,7 @@ async function main() {
     if (stopping) return;
     stopping = true;
     log.info('Stopping: saving the show and releasing DMX outputs...');
-    session.saveNow();
+    session.saveNow({ sync: true });
     engine.stop?.();
     await outputs.close();
     server.close();

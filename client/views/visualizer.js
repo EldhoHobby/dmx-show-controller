@@ -246,9 +246,15 @@ export class Visualizer {
   start() {
     if (this.running) return;
     this.running = true;
-    const loop = () => {
+    // At most 30 frames a second: the DMX output itself runs at 40, and a laptop showing the
+    // 3D view in three windows at the screen's 60-144 Hz had no processor left for the engine.
+    let last = 0;
+    const loop = (now = performance.now()) => {
       if (!this.running) return;
-      this.render();
+      if (now - last >= 1000 / 30 - 4) {
+        last = now;
+        this.render();
+      }
       this.raf = requestAnimationFrame(loop);
     };
     loop();

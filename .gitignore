@@ -12,3 +12,6 @@ samples/*.wav
 
 # Local editor and assistant settings.
 .claude/
+
+# A copy of the shows and songs packed for moving to another computer (see SETUP.md).
+move-kit/

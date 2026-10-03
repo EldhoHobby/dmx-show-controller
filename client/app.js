@@ -480,8 +480,14 @@ store.on('connection', ({ state, wasOpen }) => {
   if (state === 'closed' && wasOpen) toast('Lost the connection to the engine. The lights keep running; reconnecting…', 'error', 5000);
 });
 
-(function frame() {
-  if (store.show) store.emit('frame', store.positionNow());
+// Playheads, meters and counters: 30 times a second is smooth, and leaves the processor to
+// the engine and the audio on a busy laptop (screens refresh at 60-144 Hz).
+let lastFrame = 0;
+(function frame(now = performance.now()) {
+  if (store.show && now - lastFrame >= 1000 / 30 - 4) {
+    lastFrame = now;
+    store.emit('frame', store.positionNow());
+  }
   requestAnimationFrame(frame);
 })();
 

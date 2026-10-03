@@ -88,16 +88,35 @@ export class Session {
     this.saveTimer = setTimeout(() => this.saveNow(), 1500);
   }
 
-  saveNow() {
+  /**
+   * Write the autosave. In the background by default: a slow disk (a folder synced to the
+   * cloud, a virus scan of the new file) can take a few hundred milliseconds, and the DMX
+   * frames must not wait for it. `sync` is for shutting down, when the write must finish.
+   */
+  saveNow({ sync = false } = {}) {
     clearTimeout(this.saveTimer);
-    try {
-      fs.mkdirSync(this.showsDir, { recursive: true });
-      const tmp = `${this.autosaveFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.show));
-      fs.renameSync(tmp, this.autosaveFile);
-    } catch (err) {
-      this.log.error(`Autosave failed: ${err.message}`);
+    const data = JSON.stringify(this.show);
+    const tmp = `${this.autosaveFile}.tmp`;
+    if (sync) {
+      try {
+        fs.mkdirSync(this.showsDir, { recursive: true });
+        fs.writeFileSync(tmp, data);
+        fs.renameSync(tmp, this.autosaveFile);
+      } catch (err) {
+        this.log.error(`Autosave failed: ${err.message}`);
+      }
+      return;
     }
+    // One write at a time, in order, so an older show never lands after a newer one.
+    this.saving = (this.saving || Promise.resolve()).then(async () => {
+      try {
+        await fs.promises.mkdir(this.showsDir, { recursive: true });
+        await fs.promises.writeFile(tmp, data);
+        await fs.promises.rename(tmp, this.autosaveFile);
+      } catch (err) {
+        this.log.error(`Autosave failed: ${err.message}`);
+      }
+    });
   }
 
   // ---- Transport -----------------------------------------------------------------------
@@ -266,22 +285,26 @@ export class Session {
       return;
     }
     client.audioRefused = false;
+    // When the sound happened, as the input window's audio thread measured it: a busy
+    // computer can hold a message up for a few hundred milliseconds, and stamping it on
+    // arrival would put those hits off the beat. Windows that do not say use arrival time.
+    const at = finite(msg.at) && msg.at <= t + 5 && msg.at >= t - 2000 ? Math.min(msg.at, t) : t;
     let hit = false;
     if (Array.isArray(msg.on)) {
       for (const e of msg.on.slice(0, 16)) {
         const band = Array.isArray(e) ? REACTIVE_BANDS[e[0]] : undefined;
         if (!band) continue;
-        r.last[band] = t;
+        r.last[band] = at;
         r.strength[band] = finite(e[1]) ? clamp(e[1], 0, 1) : 1;
         r.count[band] = (r.count[band] + 1) % 1e9;
-        this.tracker.hit(e[0], t);
+        this.tracker.hit(e[0], at);
         hit = true;
       }
     }
     if (Array.isArray(msg.lv) && msg.lv.length >= 4) {
       const [low, mid, high, energy] = msg.lv.map((v) => (finite(v) ? clamp(v, 0, 1) : 0));
       r.env = { low, mid, high, energy };
-      this.tracker.levels(msg.lv, t);
+      this.tracker.levels(msg.lv, at);
     }
     if (finite(msg.bpm)) r.bpm = clamp(msg.bpm, 0, 300);
     r.source = client.id;

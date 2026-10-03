@@ -276,11 +276,23 @@ export function normalizeAnalysis(a) {
   const sections = Array.isArray(a.sections)
     ? a.sections
         .filter(isPlainObject)
-        .map((s) => ({ start: num(s.start), end: num(s.end), energy: num(s.energy), label: str(s.label, 'section', 24) }))
+        .map((s) => ({
+          start: num(s.start),
+          end: num(s.end),
+          energy: num(s.energy),
+          label: str(s.label, 'section', 24),
+          // A shuffle, 6/8 or 12/8 part: the beat divides in three (version 3+).
+          ...(s.feel === 'triplet' ? { feel: 'triplet' } : {}),
+        }))
+    : [];
+  // Songs that change tempo (mashups, medleys): where each tempo starts (version 3+).
+  const tempos = Array.isArray(a.tempos)
+    ? a.tempos.filter(isPlainObject).slice(0, 64).map((t) => ({ start: num(t.start), bpm: num(t.bpm) }))
     : [];
   return {
     durationMs: num(a.durationMs),
     bpm: num(a.bpm),
+    tempos,
     confidence: num(a.confidence),
     sections,
     drops: numArray(a.drops),

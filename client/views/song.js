@@ -131,6 +131,8 @@ export class SongView {
         ),
       ),
       a.confidence < 0.4 ? h('div', { class: 'note warn' }, 'The beat was hard to find in this song. Check the grid against the music (play it and watch the bar counter), and correct it with Tap, ×2/÷2 or the grid buttons.') : null,
+      a.tempos?.length > 1 ? h('div', { class: 'note' },
+        `The tempo changes in this song (a mashup or medley): ${a.tempos.map((x) => `${Math.round(x.bpm * 10) / 10} BPM from ${formatTime(x.start, false)}`).join(', ')}. The beat grid follows it. Typing a tempo above replaces it with one steady tempo.`) : null,
       h('table', { class: 'grid' },
         h('thead', {}, h('tr', {}, ['Section', 'Starts', 'Bars', 'Energy'].map((t) => h('th', {}, t)))),
         h('tbody', {}, a.sections.map((s, i) => {

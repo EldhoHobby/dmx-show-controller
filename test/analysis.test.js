@@ -43,6 +43,37 @@ for (const c of cases) {
   });
 }
 
+test('a mashup that changes tempo gets a beat grid that follows both songs', () => {
+  // DJ mashups and dance medleys change tempo between songs: 24 bars of the demo at 118 BPM
+  // spliced to 24 bars of it at 128 BPM, each from its groove on (kick, claps, hi-hats).
+  const fs = 22050;
+  const part = (bpm) => {
+    const demo = synthesizeDemo({ bpm, sampleRate: fs });
+    const barMs = 240000 / bpm;
+    const [from, to] = [8 * barMs, 32 * barMs];
+    const samples = demo.samples.subarray(Math.round((from / 1000) * fs), Math.round((to / 1000) * fs));
+    return { samples, kicks: demo.truth.kicks.filter((k) => k >= from && k < to).map((k) => k - from) };
+  };
+  const [a, b] = [part(118), part(128)];
+  const samples = new Float32Array(a.samples.length + b.samples.length);
+  samples.set(a.samples);
+  samples.set(b.samples, a.samples.length);
+  const splice = (a.samples.length / fs) * 1000;
+  const kicks = [...a.kicks, ...b.kicks.map((k) => k + splice)];
+
+  const r = analyzeAudio({ channels: [samples], sampleRate: fs });
+  assert.equal(r.steadyTempo, false);
+  assert.equal(r.tempos.length, 2, JSON.stringify(r.tempos));
+  assert.ok(Math.abs(r.tempos[0].bpm - 118) < 0.3 && Math.abs(r.tempos[1].bpm - 128) < 0.3, JSON.stringify(r.tempos));
+  assert.ok(Math.abs(r.tempos[1].start - splice) < 3000, `tempo change at ${r.tempos[1].start} ms, splice at ${splice} ms`);
+  // Every kick has a grid beat within 15 ms, right up to the splice and from it on.
+  const worst = Math.max(...kicks.map((k) => Math.min(...r.beats.map((x) => Math.abs(x - k)))));
+  assert.ok(worst < 15, `worst beat error ${worst.toFixed(1)} ms`);
+  // No doubled or dropped beat where the songs meet.
+  const gaps = r.beats.slice(1).map((t, i) => t - r.beats[i]);
+  assert.ok(Math.min(...gaps) > 0.9 * (60000 / 128) && Math.max(...gaps) < 1.1 * (60000 / 118), `beat gaps ${Math.min(...gaps)}-${Math.max(...gaps)} ms`);
+});
+
 test('analysis refuses audio that is too short', () => {
   assert.throws(() => analyzeAudio({ channels: [new Float32Array(1000)], sampleRate: 44100 }), /too short/);
 });

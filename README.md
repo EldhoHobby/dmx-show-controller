@@ -15,6 +15,10 @@ the lights live.
 **Windows:** double-click `start.bat`. It finds Node.js (installed, or the copy that ships with
 Visual Studio), starts the engine and opens the app in your browser.
 
+**New computer:** [SETUP.md](SETUP.md) walks through installing it from GitHub on a Windows
+computer used for shows and development, bringing your shows and songs along, and updating
+the show copy later with `update.bat`.
+
 **Any system:** install Node.js 20 or newer, then:
 
 ```bash
@@ -124,11 +128,16 @@ colours and movement run on the beat clock, so they keep time through breakdowns
   top, and the top bar shows an **Auto show** chip (click it to stop).
 - The status line shows what it is following, for example "Drop · 128 BPM · bar 3 of 8", and four
   dots blink on the beat.
-- It needs a steady kick to find the beat, as most dance music has. A drop is the kick coming
-  back after a build-up or after a one- or two-bar gap. When the kick returns after a long
+- It finds the beat from all the drums, so it follows syncopated rhythms (kuthu and other Indian
+  dance beats, broken beats, half-time) as well as a four-on-the-floor kick, and finds a new
+  tempo when a mashup or medley changes song. Sparse kicks under a full mix still count as a
+  groove; a breakdown is the kick gone for a while, sooner when the bass and the mix drop too.
+- A drop is the kick coming back after a build-up (a regular snare roll), or after a one- or
+  two-bar break with the bass out in four-on-the-floor music. When the kick returns after a long
   breakdown with no build-up, it is treated as the groove coming back (with a softer flash):
   that cannot be told apart from the start of a build-up as it happens, and a false drop is worse
-  than a missed one.
+  than a missed one. So songs whose big moments are a full band coming in, rather than an
+  EDM-style build-up, mostly get no drop flash live (the song generator does find those).
 
 How it works, for developers: `shared/analysis/live-detector.js` (band filters, onset rules,
 tempo) runs in an AudioWorklet on the browser's real-time audio thread; hits go through a
@@ -168,11 +177,16 @@ I changed or tightened it, and why.
    movement and colour effects, scaled by energy, laid out across the real stage positions. It
    produces a strong first draft. It is not machine learning and has no taste.
 
-5. **The audio analysis is verified on synthetic tracks; real recordings will be messier.**
+5. **The audio analysis is verified on synthetic tracks and checked on real ones.**
    On generated club tracks at 100, 128 and 174 BPM it finds the exact tempo, beats within
-   15 ms, the correct bar starts and every section boundary (see `test/analysis.test.js`).
-   Real recordings with tempo changes, breakdowns without drums or unusual structures will need
-   the correction tools on the Song page.
+   15 ms, the correct bar starts and every section boundary, and on a mashup that changes tempo
+   it switches at the right beat (see `test/analysis.test.js`). The tempo is followed through
+   the song (`shared/analysis/tempo-map.js`), so DJ mashups and dance medleys get a beat grid
+   that changes with them; the Song page lists the tempos. Checked on real Malayalam and Tamil
+   dance tracks (mashups, a medley, a 6/8 song): the grid lands on the drums, though it may
+   choose half time (75 instead of 150 BPM) or keep the beat through a triplet passage.
+   Songs without a clear beat (speech, free-time intros) still get a grid, and unusual
+   structures may need the correction tools on the Song page.
 
 6. **The event file is self-contained.** Besides millisecond timings and clips, it embeds every
    fixture profile the patch uses and the beat grid. It opens on any machine, and tempo-following
@@ -239,6 +253,13 @@ node --test "test/**/*.test.js"
   with `--port 8081`.
 - **A light ignores the timeline:** check the top bar for a **Manual** chip (faders are holding
   it) or a **Calibrating** chip. Click the chip to give the lights back to the show.
+- **Lights stutter, lag or miss beats:** look at Live › Output: the engine should show close to
+  40 fps. On a busy laptop it used to drop to 8-20 (other programs took its turn), so the engine
+  now raises itself to high priority at start (the console says so) and the 3D views draw at
+  most 30 frames a second. Each open window with a 3D view still costs processor time: keep one
+  3D view open during a show, not three.
+- **Lights lag over Wi-Fi:** many routers delay or drop multicast on Wi-Fi. Connect the DMX node
+  with a network cable, or set sACN to unicast with the node's IP address on Edit › Outputs.
 - **No Listen button on a phone:** live audio has to be started in the window on the controller
   computer (see Live audio input).
 - **Windows firewall prompt:** Windows may ask whether Node.js may use the network the first time

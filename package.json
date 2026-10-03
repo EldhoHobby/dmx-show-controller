@@ -1,6 +1,6 @@
 {
   "name": "dmx-show-controller",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "Browser-based DMX lighting show designer and player with sACN / Art-Net output",
   "private": true,
   "type": "module",

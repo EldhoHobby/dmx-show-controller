@@ -266,11 +266,36 @@ export function generateShow(show, options = {}) {
     }
   }
 
+  // A shuffle, 6/8 or 12/8 section divides the beat in three: its chases, flicks and colour
+  // steps go on the thirds too, or they would land between the drums.
+  const triplets = sections.filter((s) => s.feel === 'triplet');
+  for (const c of clips) {
+    if (triplets.some((s) => c.start + 1 >= s.start && c.start + 1 < s.end)) c.params = toThirds(c.params);
+  }
+
   return {
     durationMs,
     tracks: DEFAULT_TRACKS.map((t) => ({ ...t, muted: false })),
     clips,
   };
+}
+
+/**
+ * The same rhythm in thirds of a beat: a step or division shorter than a beat becomes the
+ * nearest of 1/6, 1/3 and 2/3 (half a beat becomes two triplets), and an offset lands on a
+ * third (the off-beat "and" becomes the shuffle's last triplet).
+ */
+export function toThirds(params) {
+  const out = { ...params };
+  for (const key of ['step', 'division']) {
+    const v = out[key];
+    if (typeof v !== 'number' || !(v > 0 && v < 1)) continue;
+    out[key] = [1 / 6, 1 / 3, 2 / 3].reduce((best, x) => (Math.abs(Math.log(v / x)) < Math.abs(Math.log(v / best)) ? x : best));
+  }
+  if (typeof out.offset === 'number' && out.offset % 1) {
+    out.offset = Math.floor(out.offset) + Math.round((out.offset % 1) * 3) / 3;
+  }
+  return out;
 }
 
 const round = (v) => Math.round(v * 10) / 10;

@@ -313,6 +313,17 @@ test('engine end to end: manual faders, scenes, calibration and live-audio hits 
     assert.ok(a.messages.some((m) => m.t === 'status' && m.status.engine.hitFps > 0), 'status reports hit frames');
     assert.ok(!mic.messages.some((m) => m.t === 'reactive'), 'the audio socket is kept free of show traffic');
 
+    // A hit held up on a busy computer keeps the time the audio thread heard it; a time that
+    // cannot be right (from the future, or long ago) falls back to the time it arrived.
+    const heard = performance.timeOrigin + performance.now() - 300;
+    mic.send({ t: 'au', on: [[0, 1]], at: heard });
+    const late = await a.fresh((m) => m.t === 'reactive' && m.reactive.count.low === 7);
+    assert.ok(Math.abs(late.reactive.last.low - heard) < 2, `stamped ${(late.reactive.last.low - heard).toFixed(1)} ms off`);
+    const sentAt = performance.timeOrigin + performance.now();
+    mic.send({ t: 'au', on: [[0, 1]], at: sentAt + 60000 });
+    const bogus = await a.fresh((m) => m.t === 'reactive' && m.reactive.count.low === 8);
+    assert.ok(Math.abs(bogus.reactive.last.low - sentAt) < 200, 'a future time is not believed');
+
     // A second window starting live audio while the first is listening is refused (it would
     // double every hit) and told why.
     const mic2 = new Client(`ws://127.0.0.1:${engine.port}/ws?view=audio`);
@@ -322,7 +333,7 @@ test('engine end to end: manual faders, scenes, calibration and live-audio hits 
     const refused = await mic2.next((m) => m.t === 'error');
     assert.match(refused.message, /already the live audio input/);
     await sleep(100);
-    assert.equal(a.messages.findLast((m) => m.t === 'reactive').reactive.count.low, 6, 'its hit was not counted');
+    assert.equal(a.messages.findLast((m) => m.t === 'reactive').reactive.count.low, 8, 'its hit was not counted');
     mic2.ws.close();
 
     // With audio-reactive off, hits are still metered but do not touch the lights.

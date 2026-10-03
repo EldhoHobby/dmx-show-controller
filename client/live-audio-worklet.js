@@ -45,7 +45,10 @@ class LiveAudioProcessor extends AudioWorkletProcessor {
     for (let b = 0; b < 4; b++) if (lv[b] > this.peak[b]) this.peak[b] = lv[b];
     const withLevels = ++this.blocks % 7 === 0;
     if (!events.length && !withLevels) return true;
-    const msg = {};
+    // When it happened, on the audio clock: the relay worker turns this into the computer's
+    // clock, so a hit keeps its true time however late the page, the worker or the engine
+    // get to it on a busy computer.
+    const msg = { at: currentTime * 1000 };
     if (events.length) msg.on = events.map((e) => [e.band, Math.round(e.strength * 100) / 100]);
     if (withLevels) {
       msg.lv = this.peak.map((v) => Math.round(v * 1000) / 1000);
