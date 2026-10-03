@@ -167,7 +167,7 @@ async function main() {
     onConnection: (conn, req) => session.addClient(conn, req),
   });
 
-  // Status for every window once a second; drop windows that stopped answering.
+  // Status for every window once a second.
   setInterval(() => {
     session.broadcast({ t: 'status', status: session.getStatus(), clients: session.clients.size });
   }, 1000).unref();
@@ -177,6 +177,7 @@ async function main() {
     session.reactiveDirty = false;
     session.broadcast({ t: 'reactive', reactive: session.reactive });
   }, 33).unref();
+  // Ping every window every 15 s, and drop one that has not been heard from in 45 s.
   setInterval(() => {
     for (const c of session.clients.values()) {
       if (Date.now() - c.conn.lastActivity > 45000) c.conn.close(1001);

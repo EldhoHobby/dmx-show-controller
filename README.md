@@ -19,7 +19,7 @@ Visual Studio), starts the engine and opens the app in your browser.
 computer used for shows and development, bringing your shows and songs along, and updating
 the show copy later with `update.bat`.
 
-**Any system:** install Node.js 20 or newer, then:
+**Any system:** install Node.js 22 or newer, then:
 
 ```bash
 node server/index.js
@@ -55,12 +55,22 @@ The app has two modes: **Edit** (build the show) and **Live** (run it).
 | 3 | Edit › Song | Drop in an MP3/WAV/AAC/FLAC. The app detects BPM, beats, bars, sections, drops and the drum pattern. Correct the grid if needed (Tap, ×2/÷2, nudge, bar start), fix section labels, then **Generate show**: it pulses on the real kick drum, flicks on the hi-hats, flares on the snares, changes looks every 8 bars and builds up into each drop. |
 | 4 | Edit › Timeline | Edit the generated clips: move, resize, copy, change effects, keyframes. Everything snaps to the beat. |
 | 5 | Edit › Control | **Group faders** (intensity, colour, pan, tilt, zoom, strobe, gobo) and, for one fixture, a pan/tilt pad plus a fader for **every DMX channel** with the value going out right now. Record what the faders hold as **scenes**. |
-| 6 | Edit › Outputs | Choose sACN / Art-Net / USB and the network adapter. One click sets up a DMX-AN2. |
+| 6 | Edit › Outputs | Choose sACN / Art-Net / USB and the network adapter. One click sets up a DMX-AN2. The controller announces the universes it drives (sACN Universe Discovery, and it answers Art-Net ArtPoll), so monitoring and management tools on the network can see it. |
 | 7 | Export | Validates the show (address clashes, out-of-range moves, missing profiles, stale scenes…) and saves a self-contained `.dmxshow.json`. |
 | 8 | Live | Open the file, press Play. Grand master, blackout, hold-to-flash blinder and strobe, ±50 ms nudge, **scene buttons**, and **live audio** that makes the lights react to the music in the room. |
 
-Try it without your own rig or music: the Song page has a **demo track** button, and
-`shows/Demo show (128 BPM).dmxshow.json` is a ready-made, validated example.
+Try it without your own rig or music. The Song page has a **Use the 128 BPM demo track**
+button, and two ready-made, validated shows are in `shows/`:
+
+- **`Neon Mile (128 BPM).dmxshow.json`** — three minutes on a club-sized rig: 22 fixtures over
+  two universes (six back-truss pars, six wash movers, four spots, two deck strobes, four floor
+  pixel bars), 79 clips. Its song is synthesized rather than stored, so run `npm run demo-show`
+  once to build the track; that also seeds the audio cache, so the show then opens with its
+  song already loaded instead of asking for the file. Re-running rebuilds song and timeline
+  from scratch.
+- **`Demo show (128 BPM).dmxshow.json`** — the smaller original: two minutes, seven fixtures in
+  one line on a single universe. Its track is the Song page's demo track (`npm run demo-audio`,
+  which `start.bat` runs for you).
 
 Keys: **Space** play/pause · **Ctrl+Z / Ctrl+Y** undo/redo · **Delete**, **Ctrl+D**, **←/→**
 on selected clips · stage layout: **arrows** nudge the selection 10 cm (Shift 50 cm) ·
@@ -124,6 +134,13 @@ the strobes. Kick pulses, snare flares and hi-hat flicks fire on the drums thems
 colours and movement run on the beat clock, so they keep time through breakdowns too. Pick
 *Calm*, *Balanced* or *Energetic* next to the switch.
 
+- **Speed** under the style pulls the whole thing back or pushes it on, from *4× slower* to
+  *2× faster*, reading *normal* in the middle. It stretches what runs on the beat clock —
+  chase steps, colour steps, movement — and deliberately leaves the drum hits alone, so kick
+  pulses and snare flares stay locked to the room however far you wind it down. Reach for it
+  when the lighting reads busier than the music, which also happens when the tempo lock comes
+  out an octave high.
+
 - It takes the timeline's place while it is on. Scenes, faders and *Lights react* still work on
   top, and the top bar shows an **Auto show** chip (click it to stop).
 - The status line shows what it is following, for example "Drop · 128 BPM · bar 3 of 8", and four
@@ -154,7 +171,7 @@ I changed or tightened it, and why.
 
 1. **A small local engine plus browser windows, not a pure web page.** Browsers cannot send
    UDP, so a web page alone can never output sACN or Art-Net. The engine (`server/`) is a
-   ~1,400-line Node.js process with no dependencies. It owns the show, the clock and the DMX
+   ~2,100-line Node.js process with no dependencies. It owns the show, the clock and the DMX
    output. Every browser window is a client. This is also what delivers the "multiple
    simultaneous web clients" requirement: all windows edit and watch the same show live.
 
@@ -232,25 +249,36 @@ shared/        code that runs in both the engine and the browser:
                  validation, beat grid, fixture library, OFL import, audio analysis, generator
 client/        the browser app (no build step): views, WebGL visualizer, audio, Web Serial USB
 test/          node:test suites, including an end-to-end test of the real engine
-tools/         demo track generator
+tools/         demo-song.js        the "Neon Mile" synth (arrangement, kit, mix)
+               make-demo-show.js   renders it, analyses it, patches a rig, generates the show
+               make-demo-audio.js  the shorter 128 BPM test track for the Song page
 shows/         autosave and exported shows        media/   cached song audio
+samples/       generated demo tracks (not in git; the tools above recreate them)
 config/        outputs.json: venue output settings (per machine)
 ```
 
-Run the tests (about 20 seconds; they include the real engine end to end and the live-audio
+Run the tests (20-40 seconds; they include the real engine end to end and the live-audio
 hit-to-network delay):
 
 ```bash
-node --test "test/**/*.test.js"
+npm test
 ```
+
+That is bare `node --test`, which searches the working directory. Do not pass it a glob:
+`node --test "test/**/*.test.js"` skips `test/fixtures/`, and glob patterns there only arrived
+in Node 21. The same command runs on GitHub (`.github/workflows/test.yml`) on Node 22 and 24,
+on Linux and Windows.
 
 ## Troubleshooting
 
 - **Lights do not react with a DMX-AN2:** the computer's Ethernet adapter must be on the node's
   network (2.0.0.2 / 255.0.0.0 out of the box). On Edit › Outputs pick that adapter, because
   multicast otherwise follows the default route, which is usually Wi-Fi.
-- **"Port 8080 is already in use":** the engine is already running in another window, or start it
-  with `--port 8081`.
+- **"The DMX Show Controller is already running on this computer":** the engine is up in
+  another window. Close that window and start again; two engines would fight over the lights
+  and over the saved show.
+- **"Another program is using port 8080"** (or **"Port 8080 is already in use"**): something
+  else has the port. Start with `--port 8081` and open <http://localhost:8081> instead.
 - **A light ignores the timeline:** check the top bar for a **Manual** chip (faders are holding
   it) or a **Calibrating** chip. Click the chip to give the lights back to the show.
 - **Lights stutter, lag or miss beats:** look at Live › Output: the engine should show close to

@@ -1,8 +1,9 @@
-// Art-Net 4 ArtDmx packets, UDP port 6454.
+// Art-Net 4 on UDP port 6454: ArtDmx out, and ArtPoll in / ArtPollReply out, so Art-Net
+// management software can discover this controller.
 //
-// Layout: "Art-Net\0", OpCode 0x5000 (little-endian), ProtVer 14 (big-endian), Sequence,
-// Physical, SubUni (low 8 bits of the 15-bit port address), Net (high 7 bits),
-// Length (big-endian, even, 2..512), data.
+// ArtDmx layout: "Art-Net\0", OpCode 0x5000 (little-endian), ProtVer 14 (big-endian),
+// Sequence, Physical, SubUni (low 8 bits of the 15-bit port address), Net (high 7 bits),
+// Length (big-endian, even, 2..512 — always a full 512 here), data.
 //
 // Art-Net numbers universes from 0, sACN from 1. This app numbers universes from 1 everywhere
 // and converts here with `universeOffset` (default -1, so app universe 1 = Art-Net 0:0:0).
@@ -144,6 +145,11 @@ export class ArtNetOutput {
    * @param {string} cfg.host         node IP, or a broadcast address such as 2.255.255.255
    * @param {number} cfg.universeOffset added to the app universe to get the Art-Net port address
    * @param {string} cfg.interface    local IP to send from ('' = OS default)
+   * @param {string} cfg.sourceName   long name this controller reports in ArtPollReply
+   * @param {number} [cfg.port]       non-standard ArtDmx destination port (default 6454)
+   * @param {boolean} [cfg.discovery] false to not answer ArtPoll at all
+   * @param {number} [cfg.discoveryPort] port to listen for ArtPoll on (default 6454; the
+   *                                  tests use another so they need not take the real one)
    */
   constructor(cfg) {
     this.cfg = cfg;
@@ -190,7 +196,8 @@ export class ArtNetOutput {
    *
    * Deliberately a second socket. Port 6454 is shared ground — another Art-Net tool on the
    * same machine may already hold it — and discovery is a convenience, while sending DMX is
-   * not. So a bind failure here is logged and otherwise ignored, and output is unaffected.
+   * not. So a bind failure here is kept on this.pollError and otherwise ignored: nothing
+   * logs it or reports it in status today, and output is unaffected either way.
    */
   listenForPolls() {
     if (this.pollSocket || this.cfg.discovery === false) return;

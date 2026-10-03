@@ -30,6 +30,11 @@ const CLOCK_MAX_PERIOD = 60000 / 40;
 const FAMILY = [1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2];
 // How much a hit in each band says about where the beat is: kick, snare (mid), hi-hat.
 const WEIGHT = [1, 0.6, 0.35];
+// Ceilings for the rolling hit lists (see append below). The live detector tops out near 40
+// hits a second across all three bands, so 10 s of hits is about 400 and 16 s of hi-hats
+// about 320: these are several times anything the detector can produce.
+const MAX_HITS = 1024;
+const MAX_BAND = 512;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const mod = (n, m) => ((n % m) + m) % m;
 const wrap = (beats) => mod(beats + 0.5, 1) - 0.5; // -0.5..0.5
@@ -179,6 +184,26 @@ export function createLiveTracker() {
     while (i < list.length && (list[i].t ?? list[i]) < from) i++;
     return i ? list.slice(i) : list;
   };
+  /**
+   * Add to a rolling list of hits: in place, dropping anything older than `from` and then
+   * anything over `max`. The length cap is what keeps the engine real-time. The detector's
+   * refractory periods (120 ms kick, 90 ms snare, 50 ms hi-hat) mean real music can never
+   * reach these, but a window sending far faster than any detector would — a bug, or anything
+   * else that can open the live-audio socket — used to grow these lists without limit, and the
+   * work here is quadratic in their length: tempoFromHits compares every pair of hits, and a
+   * build's roll check tests every snare against every kick. Fifteen seconds of that and the
+   * frame loop stops putting DMX on the wire for a minute.
+   */
+  const append = (list, item, from, max) => {
+    list.push(item);
+    let i = 0;
+    while (i < list.length && (list[i].t ?? list[i]) < from) i++;
+    // Over the cap, drop back below it in one go rather than one hit per call: shifting a
+    // full list on every single hit is itself most of the cost under a flood.
+    if (list.length - i > max) i = list.length - max + (max >> 3);
+    if (i) list.splice(0, i);
+    return list;
+  };
   const setSection = (name, t, beat = Math.round(beatAt(t))) => {
     if (section === name) return;
     if (name === 'breakdown') {
@@ -307,7 +332,7 @@ export function createLiveTracker() {
 
   function onKick(t) {
     const k = { t, matched: false };
-    kicks = keep([...kicks, k], t - 16000);
+    append(kicks, k, t - 16000, MAX_BAND);
     if (!period) {
       lastKick = t;
       if (relock(t)) setSection('groove', t);
@@ -392,7 +417,7 @@ export function createLiveTracker() {
 
   /** A snare on the clock's beat tunes the clock like a kick, at a little over half weight. */
   function onSnare(t) {
-    snares = keep([...snares, t], t - 16000);
+    append(snares, t, t - 16000, MAX_BAND);
     if (!period || onKickBeat(t)) return;
     const n = Math.round(beatAt(t));
     const err = t - (anchor + (n - anchorBeat) * period);
@@ -417,12 +442,12 @@ export function createLiveTracker() {
   function hit(band, t) {
     if (t - lastHit > 3000) firstHit = t;
     lastHit = t;
-    hits = keep([...hits, { t, band }], t - 10000);
+    append(hits, { t, band }, t - 10000, MAX_HITS);
     if (band === 0) onKick(t);
     else if (band === 1) {
       onSnare(t);
       settleBars(t);
-    } else if (band === 2) hats = keep([...hats, t], t - 16000);
+    } else if (band === 2) append(hats, t, t - 16000, MAX_BAND);
   }
 
   function levels(lv, t) {

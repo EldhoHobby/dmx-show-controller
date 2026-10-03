@@ -29,7 +29,7 @@ Check that the first two worked: press the Windows key, type `cmd`, press Enter,
 node --version
 ```
 
-It should print `v20` or higher (for example `v24.12.0`). Then:
+It should print `v22` or higher (for example `v24.12.0`). Then:
 
 ```bat
 git --version
@@ -111,8 +111,12 @@ cd C:\DMX\dev
 start.bat --port 8081
 ```
 
-and open <http://localhost:8081>. Development work goes on its own git branch and reaches GitHub
-when you ask for it to be pushed.
+and open <http://localhost:8081> yourself. `start.bat` always opens a browser tab on
+<http://localhost:8080> whatever port you give it, so on a machine where the show copy is
+running, that tab is the **show** copy, not the dev one. Close it and use the 8081 address.
+
+Development work goes on its own git branch and reaches GitHub when you ask for it to be
+pushed.
 
 **Updating the show copy** (after a new version has been tested and merged into `main`):
 
@@ -122,11 +126,12 @@ when you ask for it to be pushed.
 3. Start it again and check the version in the engine window.
 
 Do not update right before an event. If a new version misbehaves, go back to the previous
-one (each version has a tag, for example `v0.3.2`):
+one. Each version has a tag; `git tag` lists them, and the one below `v0.3.4` is `v0.3.3`:
 
 ```bat
 cd C:\DMX\show
-git checkout v0.3.2
+git tag
+git checkout v0.3.3
 ```
 
 `update.bat` brings you back to the latest version later.
@@ -138,6 +143,8 @@ git checkout v0.3.2
 - **`git clone` asks for a password:** sign in through the window that opens; do not type a
   password into the Command Prompt. If no window opens, install Git for Windows again with the
   default settings.
-- **"Port 8080 is already in use":** a copy is already running. Close its engine window, or start
-  the other copy with `--port 8081`.
+- **"The DMX Show Controller is already running on this computer":** the other copy (show or
+  dev) is up. Close its engine window, or start this one with `--port 8081`.
+- **"Another program is using port 8080"** (or **"Port 8080 is already in use"**): something
+  that is not this program has the port. Start with `--port 8081` and open that address.
 - **The app opens but the lights do nothing:** see step 5, and Troubleshooting in `README.md`.
