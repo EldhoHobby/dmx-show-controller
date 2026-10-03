@@ -71,7 +71,7 @@ adapter. You set them up fresh in step 5.
    tablets).
 2. Windows may ask whether Node.js may use the network: allow it on **Private** networks.
    Without this, no DMX leaves the computer.
-3. The black engine window should say **DMX Show Controller 0.3.2** (or newer) and **Running at
+3. The black engine window should say **DMX Show Controller 0.3.3** (or newer) and **Running at
    high priority**. The app opens in your browser. Use Chrome or Edge.
 
 Leave the engine window open while you work. Closing it stops the lights.
