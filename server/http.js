@@ -68,8 +68,24 @@ export function createRequestHandler({ root, mediaDir, log, getInfo }) {
         'X-Content-Type-Options': 'nosniff',
       });
       if (req.method === 'HEAD') return res.end();
-      fs.createReadStream(file).pipe(res);
+      streamFile(file, res);
     });
+  }
+
+  /**
+   * pipe() does not forward source errors, so a file that disappears or becomes unreadable
+   * between the stat and the open would raise an unhandled 'error' and end the process.
+   * The headers are already sent by this point, so all we can do is drop the response.
+   */
+  function streamFile(file, res) {
+    const stream = fs.createReadStream(file);
+    stream.on('error', (err) => {
+      log.warn(`Could not read ${file}: ${err.message}`);
+      res.destroy();
+      stream.destroy();
+    });
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
   }
 
   function serveMedia(req, res, hash) {
@@ -85,7 +101,7 @@ export function createRequestHandler({ root, mediaDir, log, getInfo }) {
         } catch {}
         res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'private, max-age=31536000, immutable' });
         if (req.method === 'HEAD') return res.end();
-        fs.createReadStream(file).pipe(res);
+        streamFile(file, res);
       });
       return;
     }
@@ -114,7 +130,12 @@ export function createRequestHandler({ root, mediaDir, log, getInfo }) {
       received += chunk.length;
       if (received > MAX_MEDIA_BYTES) return abort(413, 'Too large');
       sha.update(chunk);
-      out.write(chunk);
+      // A fast LAN can outrun a slow disk (a cloud-synced folder, a virus scanner) by a wide
+      // margin. Without pausing, the backlog of a 400 MB upload is held in memory.
+      if (!out.write(chunk)) {
+        req.pause();
+        out.once('drain', () => req.resume());
+      }
     });
     req.on('error', () => abort(400, 'Upload failed'));
     req.on('end', () => {

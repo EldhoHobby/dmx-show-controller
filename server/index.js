@@ -122,11 +122,20 @@ async function main() {
   session.onOutputsRequest = async (requested, client) => {
     try {
       config = normalizeConfig(requested, config);
-      saveConfig(configFile, config, log);
+      // Apply before saving, so a configuration that cannot be applied at all is not the one
+      // waiting on disk at the next start.
       await outputs.configure(config);
+      saveConfig(configFile, config, log);
       engine.setFrameRate(config.frameRate);
       session.broadcast({ t: 'outputs', outputs: config });
       log.info(`Outputs updated from ${client.name}`);
+      // An output that failed to bind (usually an interface address not on this machine)
+      // leaves the engine running but silent, so say so instead of looking like it worked.
+      const failed = outputs.status().filter((o) => !o.ready);
+      if (failed.length) {
+        const detail = failed.map((o) => `${o.type} (${o.lastError || 'could not start'})`).join(', ');
+        session.send(client, { t: 'error', message: `Saved, but not sending on: ${detail}` });
+      }
     } catch (err) {
       session.send(client, { t: 'error', message: `Could not apply outputs: ${err.message}` });
     }

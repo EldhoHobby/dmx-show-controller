@@ -9,9 +9,24 @@ export class OutputManager {
     this.outputs = [];
     this.config = null;
     this.routed = new Set();
+    this.pending = null;
   }
 
-  async configure(config) {
+  /**
+   * Apply an output configuration. Calls are queued rather than run concurrently: two
+   * overlapping ones would interleave across the awaits in applyConfig, the second finding
+   * this.outputs already emptied by the first and so closing nothing. Both would then push
+   * their sockets, leaving two sources transmitting the same CID with independent sequence
+   * numbers — which receivers read as sequence errors and discard.
+   */
+  configure(config) {
+    this.pending = Promise.resolve(this.pending)
+      .catch(() => {})
+      .then(() => this.applyConfig(config));
+    return this.pending;
+  }
+
+  async applyConfig(config) {
     const old = this.outputs;
     this.outputs = [];
     this.routed = new Set();
@@ -62,7 +77,13 @@ export class OutputManager {
   }
 
   async close() {
-    await Promise.all(this.outputs.map((o) => o.close().catch(() => {})));
-    this.outputs = [];
+    // Queued behind any configure still in flight, so shutdown cannot leave a socket open.
+    this.pending = Promise.resolve(this.pending)
+      .catch(() => {})
+      .then(async () => {
+        await Promise.all(this.outputs.map((o) => o.close().catch(() => {})));
+        this.outputs = [];
+      });
+    return this.pending;
   }
 }

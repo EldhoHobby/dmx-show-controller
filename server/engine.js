@@ -99,8 +99,13 @@ export class Engine {
     s.expireAudio(t);
     s.tickAuto(t);
     const states = this.evaluator.evaluate(pos, s.liveContext(), t);
-    for (const u of this.outputs.routedUniverses()) if (!this.universes.has(u)) this.universes.set(u, new Uint8Array(512));
-    for (const c of s.clients.values()) if (c.usbUniverse && !this.universes.has(c.usbUniverse)) this.universes.set(c.usbUniverse, new Uint8Array(512));
+    // Rebuild the live set each frame rather than only ever adding to it: a universe that
+    // stops being routed, or a window that detaches its USB interface, would otherwise be
+    // rendered and zeroed for ever after.
+    const wanted = new Set(this.outputs.routedUniverses());
+    for (const c of s.clients.values()) if (c.usbUniverse) wanted.add(c.usbUniverse);
+    for (const u of wanted) if (!this.universes.has(u)) this.universes.set(u, new Uint8Array(512));
+    for (const u of this.universes.keys()) if (!wanted.has(u)) this.universes.delete(u);
     renderUniverses(this.evaluator, states, t, this.universes);
     this.outputs.send(this.universes);
     this.sendUsbBridges();

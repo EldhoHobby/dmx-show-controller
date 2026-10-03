@@ -292,7 +292,10 @@ export class Session {
     let hit = false;
     if (Array.isArray(msg.on)) {
       for (const e of msg.on.slice(0, 16)) {
-        const band = Array.isArray(e) ? REACTIVE_BANDS[e[0]] : undefined;
+        // Index explicitly, or a string like "length" would resolve to a function and go on
+        // to create junk keys on last/strength/count that get broadcast to every window.
+        const i = Array.isArray(e) ? e[0] : -1;
+        const band = Number.isInteger(i) && i >= 0 && i < REACTIVE_BANDS.length ? REACTIVE_BANDS[i] : undefined;
         if (!band) continue;
         r.last[band] = at;
         r.strength[band] = finite(e[1]) ? clamp(e[1], 0, 1) : 1;
