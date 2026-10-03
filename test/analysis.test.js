@@ -11,8 +11,22 @@ import { createEvaluator } from '../shared/evaluate.js';
 const cases = [
   { bpm: 128, sampleRate: 44100, leadInMs: 333 },
   { bpm: 174, sampleRate: 44100, leadInMs: 120 },
+  // Past the point where a preference for ~120 BPM used to flip the reading to half time.
+  { bpm: 185, sampleRate: 44100, leadInMs: 0 },
   { bpm: 100, sampleRate: 48000, leadInMs: 50 },
 ];
+
+test('a track that is mostly digital silence still reads its tempo', () => {
+  // A window with no energy at all, in a song whose median window also has none, used to
+  // normalize by 1/0 = Infinity. Every score became NaN, no comparison was ever true, and
+  // the tempo path backtraced to the bottom of the search range (60 BPM).
+  const demo = synthesizeDemo({ sampleRate: 22050, bpm: 128 });
+  const silence = new Float32Array(demo.samples.length * 2); // two thirds of the file silent
+  const padded = new Float32Array(silence.length + demo.samples.length);
+  padded.set(demo.samples, silence.length);
+  const a = analyzeAudio({ channels: [padded], sampleRate: 22050 });
+  assert.ok(Math.abs(a.bpm - 128) < 1, `tempo ${a.bpm} (should not collapse to the slowest tempo)`);
+});
 
 for (const c of cases) {
   test(`analysis of a ${c.bpm} BPM track at ${c.sampleRate} Hz`, () => {

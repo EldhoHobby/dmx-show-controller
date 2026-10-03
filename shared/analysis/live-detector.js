@@ -25,7 +25,11 @@ const BANDS = [
 ];
 
 function biquad(type, f0, q, fs) {
-  const w0 = (2 * Math.PI * f0) / fs;
+  // Keep the corner below Nyquist. Past it sin(w0) turns negative, alpha with it, and a0
+  // crosses zero: the filter's poles leave the unit circle and it diverges to NaN on the
+  // first sample. A Bluetooth headset in hands-free mode can hand us an 8 kHz context, where
+  // the 6 kHz hi-hat filter would do exactly that and kill the high band for the session.
+  const w0 = (2 * Math.PI * Math.min(f0, fs * 0.45)) / fs;
   const cos = Math.cos(w0);
   const alpha = Math.sin(w0) / (2 * q);
   let b0;
