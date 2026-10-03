@@ -77,6 +77,24 @@ test('a breakdown breathes on the beat clock and ignores stray kicks', () => {
   assert.deepEqual(washes.map((id) => a.get(id).dimmer), washes.map((id) => b.get(id).dimmer));
 });
 
+test('the speed dial stretches the beat-clock effects without touching the drum hits', () => {
+  const auto = snap({ section: 'groove', groove: { kick: 'none', backbeat: false, hats: true } });
+  const at = (speed) => livePlan(auto, { speed }, 10000);
+  const step = (p) => p.look.rhythm.params.step ?? p.look.rhythm.params.division;
+  // Halving the speed doubles how long each step is held.
+  assert.deepEqual([0.25, 0.5, 1, 2].map((s) => step(at(s))), [8, 4, 2, 1]);
+  // The look depends on the rate, so the prepared-layer cache key has to as well — without
+  // it the old speed keeps playing until something else happens to change the key.
+  assert.equal(new Set([0.25, 0.5, 1, 2].map((s) => at(s).key)).size, 4, 'each speed gets its own key');
+  // Out of range or nonsense falls back to something sane rather than a zero-length step.
+  for (const bad of [0, -1, 99, NaN, undefined]) {
+    assert.ok(step(at(bad)) > 0 && Number.isFinite(step(at(bad))), `speed ${bad}`);
+  }
+  // Pulses fire on the real drum, so the dial must not move them off the beat.
+  const kicky = (speed) => livePlan(snap({ section: 'drop', groove: { kick: 'four', backbeat: true, hats: true } }), { speed }, 10000);
+  assert.equal(kicky(0.25).kickPulse, kicky(2).kickPulse, 'kick-following is unchanged by the dial');
+});
+
 test('a build speeds its chase up with the snare roll and brings the strobes in', () => {
   const slow = livePlan(snap({ section: 'build', roll: 1 }), {}, 1000);
   const eighths = livePlan(snap({ section: 'build', roll: 2 }), {}, 1000);

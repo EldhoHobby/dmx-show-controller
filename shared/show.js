@@ -164,14 +164,22 @@ export function normalizeScene(s) {
 export const REACTIVE_BANDS = ['low', 'mid', 'high'];
 export const REACTIVE_ACTIONS = ['pulse', 'flash', 'strobe', 'colorStep', 'follow', 'scene'];
 
-/** Kick pumps the washes, the mid band (snare, vocals) steps their colour, hi-hats flick the movers. */
 /** Looks the live auto show can play (see shared/looks.js STYLES). */
 export const AUTO_STYLES = ['calm', 'balanced', 'energetic'];
+// A quarter speed holds a look for four beats where it would have held one; double is as
+// fast as anything stays watchable. 1 is "as the style intends".
+export const AUTO_SPEED_MIN = 0.25;
+export const AUTO_SPEED_MAX = 2;
 
+/** Kick pumps the washes, the mid band (snare, vocals) steps their colour, hi-hats flick the movers. */
 export function defaultReactive() {
   return {
     sensitivity: { low: 1, mid: 1, high: 1 },
     autoStyle: 'balanced',
+    // How fast the auto show's chases, steps and movement run, as a multiple of the style's
+    // own rate. 1 = on the beat; below 1 holds each look longer, which is what a room wants
+    // when the lighting feels busier than the music.
+    autoSpeed: 1,
     mappings: [
       { id: 'map_kick', band: 'low', action: 'pulse', target: 'role:wash', amount: 1, decayMs: 260, sceneId: '', colors: [] },
       {
@@ -212,6 +220,7 @@ export function normalizeReactive(r) {
   return {
     sensitivity: { low: s(sens.low), mid: s(sens.mid), high: s(sens.high) },
     autoStyle: AUTO_STYLES.includes(r.autoStyle) ? r.autoStyle : 'balanced',
+    autoSpeed: clampTo(num(r.autoSpeed, 1), AUTO_SPEED_MIN, AUTO_SPEED_MAX),
     mappings: dedupe((Array.isArray(r.mappings) ? r.mappings : []).map(normalizeMapping).filter(Boolean)).slice(0, 32),
   };
 }

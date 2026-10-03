@@ -7,8 +7,18 @@ config/outputs.json
 config/*.tmp
 node_modules/
 
-# Generated: start.bat (or `node tools/make-demo-audio.js`) recreates the demo track.
+# Generated demo tracks. start.bat (or `npm run demo-audio`) recreates the Song page's test
+# track; `npm run demo-show` recreates the "Neon Mile" song along with its show.
 samples/*.wav
+
+# Your own music, dropped in to try the app or to test the beat tracking against. Audio
+# that is not ours to redistribute must not end up in the repository.
+Files/
+samples/*.mp3
+samples/*.mpeg
+samples/*.m4a
+samples/*.flac
+samples/*.ogg
 
 # Local editor and assistant settings.
 .claude/

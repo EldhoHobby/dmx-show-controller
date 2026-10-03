@@ -10,7 +10,7 @@ import { NAMED_COLORS, hexToRgb, rgbToHex } from '/shared/color.js';
 import { uid } from '/shared/util.js';
 import { liveAudioSupport } from '../lib/live-audio.js';
 import { STYLES, labelName } from '/shared/looks.js';
-import { AUTO_STYLES } from '/shared/show.js';
+import { AUTO_STYLES, AUTO_SPEED_MAX, AUTO_SPEED_MIN } from '/shared/show.js';
 import { liveBeat } from '/shared/analysis/live-tracker.js';
 
 const BANDS = [
@@ -134,6 +134,7 @@ export class AudioPanel {
           select(AUTO_STYLES.map((k) => [k, STYLES[k].label]), show.audioReactive.autoStyle, (v) => st.op({ type: 'reactive.set', changes: { autoStyle: v } }), { 'aria-label': 'Auto show style' }),
           h('div', { class: 'beat-dots', title: 'The beat the auto show is following' }, this.beatDots),
         ),
+        this.speedRow(show),
         this.autoStatus,
       ),
       h('details', { class: 'reactions', open: this.showReactions, ontoggle: (e) => {
@@ -213,6 +214,41 @@ export class AudioPanel {
     if (this.autoStatus.textContent !== text) this.autoStatus.textContent = text;
   }
 
+  /**
+   * How fast the auto show runs, relative to what the style would do on its own.
+   *
+   * The style presets only offer two distinct rates, and neither of them is slow. When the
+   * lighting reads busier than the music — which also happens when the tempo lock is an
+   * octave out — the operator needs to pull it back without changing anything else.
+   */
+  speedRow(show) {
+    const value = show.audioReactive.autoSpeed ?? 1;
+    // Wide enough for "4× slower" on one line; the shared .field-row output is sized for a
+    // bare number and wraps this onto two.
+    const label = h('output', { class: 'mono', style: { width: '64px', whiteSpace: 'nowrap' } }, speedLabel(value));
+    const slider = h('input', {
+      type: 'range',
+      min: AUTO_SPEED_MIN,
+      max: AUTO_SPEED_MAX,
+      step: 0.25,
+      value: String(value),
+      'aria-label': 'Auto show speed',
+      title: 'How fast chases, colour steps and movement run. Drum hits stay on the beat either way.',
+      // Live feedback while dragging, but only one edit sent when the handle is released.
+      oninput: (e) => {
+        label.textContent = speedLabel(Number(e.target.value));
+      },
+      onchange: (e) => {
+        this.store.op({ type: 'reactive.set', changes: { autoSpeed: Number(e.target.value) } }).catch(() => {});
+      },
+    });
+    return h('label', { class: 'field-row', style: { fontSize: '12px' } },
+      h('span', { class: 'muted', style: { width: '42px' } }, 'Speed'),
+      slider,
+      label,
+    );
+  }
+
   // ---- Reactions -----------------------------------------------------------------------
 
   setMappings(fn) {
@@ -271,4 +307,11 @@ export class AudioPanel {
       ),
     );
   }
+}
+
+/** The speed dial in words, because "0.5" means nothing standing over a lighting desk. */
+function speedLabel(v) {
+  if (v === 1) return 'normal';
+  if (v < 1) return `${Math.round((1 / v) * 10) / 10}× slower`;
+  return `${Math.round(v * 10) / 10}× faster`;
 }

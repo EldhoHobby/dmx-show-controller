@@ -120,8 +120,18 @@ function prepareClip(clip, byId) {
   const slots = new Map();
   let slotCount = ordered.length;
   if (order === 'center' && ordered.length) {
-    const xs = ordered.map((m) => m.fixture.position.x);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+    // Scanned rather than Math.min(...xs): a clip's members are its fixtures expanded cell by
+    // cell, so a pixel rig reaches the argument limit of a spread call (about 100 000 here).
+    // That threw inside createEvaluator, which the frame loop catches and retries every
+    // frame — the engine would stop sending DMX entirely and never recover.
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const m of ordered) {
+      const x = m.fixture.position.x;
+      if (x < lo) lo = x;
+      if (x > hi) hi = x;
+    }
+    const cx = (lo + hi) / 2;
     const byDistance = ordered
       .map((m) => ({ m, d: Math.abs(m.fixture.position.x - cx) }))
       .sort((a, b) => a.d - b.d);
@@ -619,6 +629,7 @@ export function createEvaluator(show) {
     color: ids(fixtures.filter((r) => r.caps.color && roleOf(r) !== 'strobe')),
   };
   const liveStyle = show.audioReactive?.autoStyle || 'balanced';
+  const liveSpeed = show.audioReactive?.autoSpeed ?? 1;
   const liveSeed = stringHash(show.meta?.name || 'show') % 6;
   const liveCache = new Map();
   const livePrepared = (key, make) => {
@@ -641,7 +652,7 @@ export function createEvaluator(show) {
   }
 
   function applyLiveShow(states, auto, rt, now) {
-    const plan = livePlan(auto, { style: liveStyle, seed: liveSeed }, now);
+    const plan = livePlan(auto, { style: liveStyle, speed: liveSpeed, seed: liveSeed }, now);
     const L = livePrepared(plan.key, () => {
       const out = {};
       for (const [name, layer] of Object.entries(plan.look)) {

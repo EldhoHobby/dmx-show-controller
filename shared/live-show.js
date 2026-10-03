@@ -15,10 +15,13 @@ const LABEL = { quiet: 'intro', groove: 'groove', build: 'build', drop: 'drop', 
 /**
  * What the auto show plays at engine time `now`.
  * @param auto   tracker snapshot (reactive.auto)
- * @param opts   { style: STYLES key, seed: palette offset for this show }
+ * @param opts   { style: STYLES key, speed: 0.25..2 multiplier on the beat-clock patterns
+ *                 (1 = as the style intends), seed: palette offset for this show }
  */
-export function livePlan(auto, { style = 'balanced', seed = 0 } = {}, now) {
+export function livePlan(auto, { style = 'balanced', speed = 1, seed = 0 } = {}, now) {
   const st = STYLES[style] || STYLES.balanced;
+  // How fast the beat-clock patterns run, on top of whatever the style does.
+  const rate = clamp(Number(speed) > 0 ? Number(speed) : 1, 0.25, 2);
   const section = auto?.section || 'quiet'; // no input yet counts as quiet
   const label = LABEL[section] || 'intro';
   const beatMs = auto?.period > 0 ? auto.period : 500;
@@ -45,6 +48,26 @@ export function livePlan(auto, { style = 'balanced', seed = 0 } = {}, now) {
     look.rhythm = look.sparkle = look.backbeat = null;
     look.base.params = { ...look.base.params, dimmer: look.base.params.dimmer * 0.6 };
   }
+  // The speed dial stretches the patterns that run off the beat clock — chase steps, colour
+  // steps, movement cycles — and deliberately leaves `division` alone. Divisions belong to
+  // the pulses and flares that fire on the real kick, snare and hi-hat, and those are what
+  // make the rig feel locked to the room. Slowing them would trade the thing the operator
+  // reached for the dial to keep.
+  if (rate !== 1) {
+    for (const [name, layer] of Object.entries(look)) {
+      if (!layer?.params) continue;
+      const p = layer.params;
+      if (typeof p.step !== 'number' && typeof p.cycle !== 'number') continue;
+      look[name] = {
+        ...layer,
+        params: {
+          ...p,
+          ...(typeof p.step === 'number' ? { step: p.step / rate } : {}),
+          ...(typeof p.cycle === 'number' ? { cycle: p.cycle / rate } : {}),
+        },
+      };
+    }
+  }
   const g = auto?.groove;
   const plan = {
     label,
@@ -56,7 +79,10 @@ export function livePlan(auto, { style = 'balanced', seed = 0 } = {}, now) {
     // Cache key for the prepared layers: everything the look depends on. Energy belongs here
     // because sectionLook scales every layer's level by it — leaving it out froze the
     // brightness at whichever energy happened to arrive first in the phrase.
-    key: `${style}|${label}|${phrase % 12}|${paletteIndex}|${g ? `${g.kick}${g.backbeat ? 'b' : ''}${g.hats ? 'h' : ''}` : '-'}|${section === 'quiet' ? 'q' : ''}|${energy}`,
+    // `rate` belongs here for the same reason `energy` does: it changes the layers the look
+    // is built from, so leaving it out would serve the cached look at the old speed until
+    // something else happened to change the key.
+    key: `${style}|${rate}|${label}|${phrase % 12}|${paletteIndex}|${g ? `${g.kick}${g.backbeat ? 'b' : ''}${g.hats ? 'h' : ''}` : '-'}|${section === 'quiet' ? 'q' : ''}|${energy}`,
     // A new part fades in over a beat; a drop cuts in on the hit.
     alpha: label === 'drop' ? 1 : clamp((now - (auto?.sectionSince ?? -Infinity)) / beatMs, 0, 1),
     // Pulses on the washes follow the real kick when the look pulses on every beat.
@@ -71,7 +97,7 @@ export function livePlan(auto, { style = 'balanced', seed = 0 } = {}, now) {
     // strobes join when the roll reaches 16th notes.
     const roll = auto?.roll || 0;
     plan.build = {
-      step: (roll >= 3 ? 0.25 : roll >= 1.5 ? 0.5 : 1) / st.speed,
+      step: (roll >= 3 ? 0.25 : roll >= 1.5 ? 0.5 : 1) / st.speed / rate,
       level: clamp(0.25 + 0.35 * (inSection / 32), 0.25, 0.6) * st.intensity,
       strobe: roll >= 3 && st.strobe,
     };
