@@ -173,13 +173,57 @@ export function fitCanvas(canvas) {
   return { ctx, w, h: hgt };
 }
 
+/**
+ * Hold on to the focused field across a re-render.
+ *
+ * Views rebuild their inputs from the show whenever it changes — including when a *different*
+ * window changes it. Text inputs only commit on 'change', so a half-typed fixture name was
+ * being replaced by the old one while the caret sat in it. Focus was already restored; this
+ * keeps what was typed, and the caret position with it.
+ *
+ * Call before replacing the DOM, then call the returned function afterwards.
+ */
+export function keepFocus(root) {
+  const el = document.activeElement;
+  const key = el?.dataset?.focusKey;
+  if (!key || !root.contains(el) || !('value' in el)) return () => {};
+  const typed = el.value;
+  let caret = null;
+  try {
+    caret = [el.selectionStart, el.selectionEnd];
+  } catch {
+    caret = null; // number and range inputs have no selection
+  }
+  return () => {
+    const next = root.querySelector(`[data-focus-key="${CSS.escape(key)}"]`);
+    if (!next) return;
+    next.focus();
+    if (!('value' in next) || next.value === typed) return;
+    next.value = typed;
+    if (!caret) return;
+    try {
+      next.setSelectionRange(caret[0], caret[1]);
+    } catch {}
+  };
+}
+
 export function pickFile(accept) {
   return new Promise((resolve) => {
     const input = h('input', { type: 'file', accept, style: { display: 'none' } });
-    input.addEventListener('change', () => {
-      resolve(input.files?.[0] || null);
+    let settled = false;
+    const finish = (file) => {
+      if (settled) return;
+      settled = true;
       input.remove();
-    });
+      resolve(file);
+    };
+    input.addEventListener('change', () => finish(input.files?.[0] || null));
+    // Dismissing the dialog fires 'cancel', not 'change'. Callers await this, so without it
+    // "Open show" or "Import fixture file" would hang for good after one cancelled pick,
+    // leaving a dead <input> in the document each time.
+    input.addEventListener('cancel', () => finish(null));
+    // Older browsers fire neither; the window regaining focus means the dialog has gone.
+    window.addEventListener('focus', () => setTimeout(() => finish(null), 500), { once: true });
     document.body.append(input);
     input.click();
   });

@@ -164,6 +164,33 @@ test('ops: every edit has an exact inverse', () => {
   assert.equal(JSON.stringify(show), before);
 });
 
+test('ops: undoing a batch that removes fixtures or a track restores everything', () => {
+  const show = rig();
+  clip(show, { id: 'c1', type: 'static', track: 'trk_base', start: 0, end: 4000, fixtures: ['p1', 'p2', 'p3'], params: { dimmer: 1 } });
+  clip(show, { id: 'c2', type: 'chase', track: 'trk_rhythm', start: 0, end: 4000, fixtures: ['p2', 'p3'], params: { step: 1 } });
+  const before = JSON.stringify(show);
+
+  // What the Patch page sends when several fixtures are deleted at once. fixture.remove
+  // undoes as a batch of its own, so the inverse has to come back flat to be appliable.
+  const inverse = applyOp(show, { type: 'batch', ops: [{ type: 'fixture.remove', id: 'p2' }, { type: 'fixture.remove', id: 'p3' }] });
+  assert.equal(show.fixtures.filter((f) => f.id === 'p2' || f.id === 'p3').length, 0);
+  assert.deepEqual(show.timeline.clips.find((c) => c.id === 'c2').fixtures, []);
+  assert.ok(inverse.ops.every((o) => o.type !== 'batch'), 'the inverse must not nest batches');
+  applyOp(show, inverse);
+  assert.equal(JSON.stringify(show), before, 'fixtures and their clip membership come back');
+
+  // Same shape for a track removal, which the inspector uses to reorder layers. c2 sits on
+  // the removed track with c1 before it, so this also pins the clips coming back in order
+  // rather than appended at the end.
+  clip(show, { id: 'c3', type: 'static', track: 'trk_base', start: 0, end: 4000, fixtures: ['p1'], params: { dimmer: 1 } });
+  const beforeTrack = JSON.stringify(show);
+  const inv2 = applyOp(show, { type: 'batch', ops: [{ type: 'track.remove', id: 'trk_rhythm' }] });
+  assert.deepEqual(show.timeline.clips.map((c) => c.id), ['c1', 'c3'], 'the track took its clip with it');
+  assert.ok(inv2.ops.every((o) => o.type !== 'batch'), 'the inverse must not nest batches');
+  applyOp(show, inv2);
+  assert.equal(JSON.stringify(show), beforeTrack, 'the track and its clips come back, in their original places');
+});
+
 test('ops: hostile and malformed input is rejected or neutralized', () => {
   const show = rig();
   assert.throws(() => applyOp(show, { type: 'nope' }), OpError);

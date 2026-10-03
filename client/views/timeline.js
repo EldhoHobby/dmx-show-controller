@@ -274,8 +274,15 @@ export class TimelineView {
       }
       const sel = this.store.ui.selectedClips;
       if (e.shiftKey) {
-        if (sel.has(hit.clip.id)) sel.delete(hit.clip.id);
-        else sel.add(hit.clip.id);
+        if (sel.has(hit.clip.id)) {
+          // Shift-clicking a clip takes it out of the selection, so there is nothing left to
+          // drag from it. Starting a drag anyway left the primary clip out of `originals`
+          // and threw on the first pointermove, stranding the whole gesture.
+          sel.delete(hit.clip.id);
+          this.store.emit('selection');
+          return;
+        }
+        sel.add(hit.clip.id);
         this.store.emit('selection');
       } else if (!sel.has(hit.clip.id)) {
         this.store.selectClips([hit.clip.id]);

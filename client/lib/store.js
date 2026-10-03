@@ -98,6 +98,10 @@ export class Store {
         this.undoStack = [];
         this.redoStack = [];
         this.invalidate();
+        // The show is replaced wholesale here, so a selection made before the reconnect can
+        // name fixtures or clips that no longer exist. Bulk actions read those ids straight
+        // out of the show and would throw on the first missing one.
+        this.pruneSelection();
         this.net.send({ t: 'hello', name: windowName(this.viewName), view: this.viewName });
         this.emit('ready');
         this.emit('show', null);
@@ -210,24 +214,53 @@ export class Store {
     return done;
   }
 
+  /**
+   * Undo and redo put the entry back if the engine refuses it. Popping first and trusting
+   * the round trip meant a rejected undo — another window having since removed what it
+   * refers to, say — silently consumed a step, and the next Ctrl+Z skipped past the edit
+   * the operator meant to reverse.
+   */
   undo() {
     const inv = this.undoStack.pop();
-    if (inv) this.op(inv, { kind: 'undo' });
+    if (inv) {
+      this.op(inv, { kind: 'undo' }).catch(() => {
+        this.undoStack.push(inv);
+        this.emit('history');
+      });
+    }
     this.emit('history');
   }
 
   redo() {
     const inv = this.redoStack.pop();
-    if (inv) this.op(inv, { kind: 'redo' });
+    if (inv) {
+      this.op(inv, { kind: 'redo' }).catch(() => {
+        this.redoStack.push(inv);
+        this.emit('history');
+      });
+    }
     this.emit('history');
   }
 
+  /**
+   * Transport and live commands are fire-and-forget, so when the socket is down they used to
+   * do nothing at all with no sign of it: an operator hitting BLACKOUT on a tablet that had
+   * dropped off the Wi-Fi got no button latch and no message, and the lights kept running.
+   */
   transportCmd(action, extra = {}) {
-    this.net.send({ t: 'transport', action, ...extra });
+    if (!this.net.send({ t: 'transport', action, ...extra })) {
+      this.emit('error', 'Not connected to the engine — the transport did not move.');
+      return false;
+    }
+    return true;
   }
 
   setLive(changes) {
-    this.net.send({ t: 'live', changes });
+    if (!this.net.send({ t: 'live', changes })) {
+      this.emit('error', 'Not connected to the engine — that did not reach the lights.');
+      return false;
+    }
+    return true;
   }
 
   /** Everything the evaluator needs on top of the show; the same as the engine's liveContext(). */

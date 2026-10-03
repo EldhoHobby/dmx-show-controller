@@ -23,6 +23,7 @@ import { cellOffsets, fixtureRole, panRange, profileCaps, resolveProfile, tiltRa
 import { livePlan } from './live-show.js';
 import { aimAt, rotationMatrix } from './kinematics.js';
 import { hsvToRgb, isColor } from './color.js';
+import { cellDimmers } from './dmx-render.js';
 import { fixtureGroups } from './groups.js';
 import { clamp, fract, hash32, lerp, mod, smoothstep, stringHash } from './util.js';
 
@@ -425,21 +426,32 @@ function rawToStates(states, raw, byId) {
     for (const [i, v] of chans) {
       const ch = rec.profile.channels[i];
       if (!ch) continue;
-      const id = Number.isInteger(ch.cell) && rec.cells ? `${fx}#${ch.cell}` : fx;
-      if (!byTarget.has(id)) byTarget.set(id, []);
-      byTarget.get(id).push([i, v]);
+      const onCell = Number.isInteger(ch.cell) && rec.cells;
+      const id = onCell ? `${fx}#${ch.cell}` : fx;
+      if (!byTarget.has(id)) byTarget.set(id, { cell: onCell ? ch.cell : -1, list: [] });
+      byTarget.get(id).list.push([i, v]);
     }
-    for (const [id, list] of byTarget) {
+    for (const [id, { cell, list }] of byTarget) {
       const s = states.get(id);
-      if (s) rawIntoState(rec, s, list, id !== fx);
+      if (s) rawIntoState(rec, s, list, cell);
     }
   }
 }
 
-/** Raw channel values of one fixture (or one cell of a pixel fixture) into its state. */
-function rawIntoState(rec, s, chans, isCell) {
+/**
+ * Raw channel values of one fixture (or cell `cell` of a pixel fixture) into its state.
+ * `cell` is -1 for the fixture itself.
+ */
+function rawIntoState(rec, s, chans, cell = -1) {
   const channels = rec.profile.channels;
-  const ownDimmer = isCell ? false : rec.caps.dimmer;
+  // A cell with a dimmer channel of its own holds intensity there; one without carries it in
+  // its colour channels. This has to match what the renderer does or the two disagree.
+  const ownDimmer = cell >= 0 ? cellDimmers(rec.profile).has(cell) : rec.caps.dimmer;
+  // Seed from what the colour channels are currently putting out, not from s.color: that is
+  // a hue, and on a dimmer-less fixture a hue of [1,1,1] at intensity 0 is black, not white.
+  // Seeding from the hue made every untouched colour channel jump to full.
+  const scale = ownDimmer ? 1 : clamp(s.dimmer, 0, 1);
+  const litColor = () => [s.color[0] * scale, s.color[1] * scale, s.color[2] * scale];
   let color = null;
   const pos = {};
   for (const [i, v] of chans) {
@@ -454,13 +466,13 @@ function rawIntoState(rec, s, chans, isCell) {
         s.dimmer = n;
         break;
       case 'red':
-        (color ||= [...s.color])[0] = n;
+        (color ||= litColor())[0] = n;
         break;
       case 'green':
-        (color ||= [...s.color])[1] = n;
+        (color ||= litColor())[1] = n;
         break;
       case 'blue':
-        (color ||= [...s.color])[2] = n;
+        (color ||= litColor())[2] = n;
         break;
       case 'zoom':
         s.zoom = n;
@@ -471,9 +483,12 @@ function rawIntoState(rec, s, chans, isCell) {
         break;
       }
       case 'pan':
-      case 'tilt':
-        (pos[ch.attr] ||= {})[ch.fine ? 'fine' : 'coarse'] = v;
+      case 'tilt': {
+        const p = (pos[ch.attr] ||= {});
+        p[ch.fine ? 'fine' : 'coarse'] = v;
+        if (ch.invert) p.invert = true;
         break;
+      }
       default:
         break;
     }
@@ -497,6 +512,9 @@ function rawIntoState(rec, s, chans, isCell) {
     } else {
       v = (p.coarse ?? 0) / 255;
     }
+    // The renderer inverts this channel on the way out, so undo it on the way back in, or
+    // the 3D view shows the beam mirrored against where the real head is pointing.
+    if (p.invert) v = 1 - v;
     s[attr] = v * range - range / 2;
   }
 }

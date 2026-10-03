@@ -35,6 +35,61 @@ function encodeSourceName(name) {
   return Buffer.from(s, 'utf8');
 }
 
+// Universe Discovery (E1.31-2018 section 6.4). A source SHALL send these every 10 seconds so
+// monitoring tools — sACN View, an Eos source list, Chamsys diagnostics — can list it and show
+// which universes it drives. Lights work without them; a technician looking for the controller
+// during a patching problem does not find it.
+export const DISCOVERY_UNIVERSE = 64214; // 239.255.250.214
+export const DISCOVERY_INTERVAL_MS = 10000;
+const MAX_UNIVERSES_PER_PAGE = 512;
+
+/**
+ * Layout: root and framing as above but with the extended vectors, then
+ *   112 discovery layer  flags+length, vector 1, page, last page, universes[] (2 bytes each)
+ */
+export function writeDiscoveryPacket({ cid, sourceName, universes, page = 0, lastPage = 0 }) {
+  const size = 120 + universes.length * 2;
+  const buf = Buffer.alloc(size);
+  // Root layer
+  buf.writeUInt16BE(0x0010, 0);
+  buf.writeUInt16BE(0x0000, 2);
+  ACN_PACKET_ID.copy(buf, 4);
+  buf.writeUInt16BE(0x7000 | (size - 16), 16);
+  buf.writeUInt32BE(0x00000008, 18); // VECTOR_ROOT_E131_EXTENDED
+  cid.copy(buf, 22, 0, 16);
+  // Framing layer
+  buf.writeUInt16BE(0x7000 | (size - 38), 38);
+  buf.writeUInt32BE(0x00000002, 40); // VECTOR_E131_EXTENDED_DISCOVERY
+  (Buffer.isBuffer(sourceName) ? sourceName : encodeSourceName(sourceName)).copy(buf, 44, 0, 63);
+  // bytes 108-111 reserved, left zero
+  // Universe discovery layer
+  buf.writeUInt16BE(0x7000 | (size - 112), 112);
+  buf.writeUInt32BE(0x00000001, 114); // VECTOR_UNIVERSE_DISCOVERY_UNIVERSE_LIST
+  buf.writeUInt8(page, 118);
+  buf.writeUInt8(lastPage, 119);
+  universes.forEach((u, i) => buf.writeUInt16BE(u, 120 + i * 2));
+  return buf;
+}
+
+/** The discovery packets for a source: one page per 512 universes, ascending as the spec requires. */
+export function discoveryPackets({ cid, sourceName, universes }) {
+  const list = [...new Set(universes)].sort((a, b) => a - b);
+  const pages = Math.max(1, Math.ceil(list.length / MAX_UNIVERSES_PER_PAGE));
+  const out = [];
+  for (let p = 0; p < pages; p++) {
+    out.push(
+      writeDiscoveryPacket({
+        cid,
+        sourceName,
+        universes: list.slice(p * MAX_UNIVERSES_PER_PAGE, (p + 1) * MAX_UNIVERSES_PER_PAGE),
+        page: p,
+        lastPage: pages - 1,
+      }),
+    );
+  }
+  return out;
+}
+
 export function writeSacnPacket(buf, { cid, sourceName, priority = 100, sequence = 0, universe, data, options = 0 }) {
   buf.fill(0, 0, SACN_PACKET_SIZE);
   // Root layer
@@ -107,11 +162,42 @@ export class SacnOutput {
     return this.cfg.mode === 'unicast' && this.cfg.unicast ? this.cfg.unicast : multicastAddress(universe);
   }
 
+  /** Announce which universes this source drives, every 10 seconds, as E1.31 section 6.4 requires. */
+  startDiscovery() {
+    if (this.discoveryTimer) return;
+    const send = () => {
+      if (!this.ready || !this.socket) return;
+      const to = this.cfg.mode === 'unicast' && this.cfg.unicast ? this.cfg.unicast : multicastAddress(DISCOVERY_UNIVERSE);
+      for (const packet of discoveryPackets({ cid: this.cfg.cid, sourceName: this.sourceName, universes: this.cfg.universes })) {
+        // Same port as the data, so a forwarding tool on a non-standard port sees both.
+        this.socket.send(packet, this.cfg.port || SACN_PORT, to, (err) => {
+          if (err) this.fail(err);
+        });
+      }
+    };
+    send(); // announce immediately, then on the interval
+    this.discoveryTimer = setInterval(send, DISCOVERY_INTERVAL_MS);
+    // Never hold the process open for a discovery tick on shutdown.
+    this.discoveryTimer.unref?.();
+  }
+
   open() {
     return new Promise((resolve) => {
       const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       this.socket = socket;
-      socket.on('error', (err) => this.fail(err));
+      // A failing bind — an interface address that is not on this machine, say — emits
+      // 'error' and never calls the listening callback, so open() has to settle here too.
+      // Otherwise configure() never returns and every output, not just this one, stays dark.
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve(this);
+      };
+      socket.on('error', (err) => {
+        this.fail(err);
+        done();
+      });
       socket.bind({ port: 0, address: this.cfg.interface || undefined, exclusive: true }, () => {
         try {
           if (this.cfg.mode !== 'unicast') {
@@ -120,10 +206,11 @@ export class SacnOutput {
             if (this.cfg.interface) socket.setMulticastInterface(this.cfg.interface);
           }
           this.ready = true;
+          this.startDiscovery();
         } catch (err) {
           this.fail(err);
         }
-        resolve(this);
+        done();
       });
     });
   }
@@ -165,6 +252,8 @@ export class SacnOutput {
 
   /** E1.31 6.2.6: send three Stream_Terminated packets so receivers release immediately. */
   async close() {
+    clearInterval(this.discoveryTimer);
+    this.discoveryTimer = null;
     if (this.ready) {
       this.ready = false;
       for (let i = 0; i < 3; i++) {

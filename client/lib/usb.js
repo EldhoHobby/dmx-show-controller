@@ -52,9 +52,12 @@ export class UsbBridge {
     this.error = null;
     this.frames = 0;
     this.dropped = 0;
-    navigator.serial.addEventListener('disconnect', (e) => {
+    // Removed again on disconnect: connecting and disconnecting repeatedly would otherwise
+    // leave one live listener per connection for the life of the page.
+    this.onUnplug = (e) => {
       if (e.target === this.port) this.disconnect('The USB interface was unplugged.');
-    });
+    };
+    navigator.serial.addEventListener('disconnect', this.onUnplug);
     this.store.net.send({ t: 'usb', attach: true, universe });
     this.store.emit('usb');
   }
@@ -63,6 +66,10 @@ export class UsbBridge {
     if (!this.connected) return;
     this.connected = false;
     this.error = reason;
+    if (this.onUnplug) {
+      navigator.serial.removeEventListener('disconnect', this.onUnplug);
+      this.onUnplug = null;
+    }
     this.store.net.send({ t: 'usb', attach: false });
     try {
       this.writer?.releaseLock();

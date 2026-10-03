@@ -1,0 +1,75 @@
+# Runs the test suite on every push and pull request.
+#
+# The project has no dependencies, so there is nothing to install and no lockfile to cache —
+# `npm test` is `node --test` over test/. The suite opens real UDP and TCP sockets, but only
+# ever to 127.0.0.1, so it needs no multicast and runs unchanged on a hosted runner.
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the minimum the package declares; 24 is what the show machines run.
+        # Not 20: it went end-of-life in April 2026, and the test client uses the global
+        # WebSocket, which only arrived in Node 21. The engine itself needs neither — it
+        # implements its own WebSocket server — so it still runs on 20; we just cannot
+        # verify that here, and supported ought to mean tested.
+        # Windows is included because that is where this is actually operated, and the
+        # engine does platform-specific things there (process priority, timer resolution).
+        os: [ubuntu-latest, windows-latest]
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run tests
+        run: npm test
+
+  demo:
+    name: Demo show builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The demo track is generated rather than committed, so a change to the synth, the
+      # analyser or the show generator could break it without any test noticing.
+      - name: Build the demo show
+        run: npm run demo-show
+
+      - name: Check it came out clean
+        run: |
+          node -e '
+            const fs = require("fs");
+            const show = JSON.parse(fs.readFileSync("shows/Neon Mile (128 BPM).dmxshow.json", "utf8"));
+            const v = show.validated || {};
+            const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
+            if (v.errors !== 0) fail(`${v.errors} validation errors`);
+            if (v.warnings !== 0) fail(`${v.warnings} validation warnings`);
+            if (show.fixtures.length !== 22) fail(`expected 22 fixtures, got ${show.fixtures.length}`);
+            if (!show.timeline.clips.length) fail("no clips were generated");
+            if (Math.abs(show.tempo.bpm - 128) > 0.5) fail(`tempo read as ${show.tempo.bpm}`);
+            const labels = show.analysis.sections.map((s) => s.label);
+            if (show.analysis.drops.length !== 2) fail(`expected 2 drops, got ${show.analysis.drops.length}`);
+            console.log(`OK: ${show.fixtures.length} fixtures, ${show.timeline.clips.length} clips, ` +
+              `${show.tempo.bpm} BPM, sections ${labels.join(" > ")}`);
+          '

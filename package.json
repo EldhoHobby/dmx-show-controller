@@ -5,13 +5,14 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node server/index.js",
     "start:lan": "node server/index.js --host 0.0.0.0",
-    "test": "node --test \"test/**/*.test.js\"",
-    "demo-audio": "node tools/make-demo-audio.js"
+    "test": "node --test",
+    "demo-audio": "node tools/make-demo-audio.js",
+    "demo-show": "node tools/make-demo-show.js"
   },
   "license": "UNLICENSED"
 }

@@ -3,7 +3,7 @@
 // The page is built from fixed sections, so the layout editor keeps its canvas (and a drag in
 // progress) while the table and the address grid re-render around it.
 
-import { h, mount, select, numberInput, textInput, icon, toast, dialog, pickFile, confirmDialog } from '../lib/dom.js';
+import { h, mount, select, numberInput, textInput, icon, toast, dialog, pickFile, confirmDialog, keepFocus } from '../lib/dom.js';
 import { allProfiles, footprint, resolveProfile, profileCaps, checkProfile, fixtureRole, channelName, channelSummary } from '/shared/fixture-library.js';
 import { fixtureGroups } from '/shared/groups.js';
 import { LayoutEditor, ROLE_COLORS } from './layout.js';
@@ -64,7 +64,7 @@ export class PatchView {
   render() {
     const { show } = this.store;
     if (!show) return;
-    const focusKey = document.activeElement?.dataset?.focusKey;
+    const restoreFocus = keepFocus(this.el);
     const validation = this.store.validation();
     const problems = new Map();
     for (const i of validation.issues) for (const id of i.fixtures) problems.set(id, [...(problems.get(id) || []), i.message]);
@@ -96,7 +96,7 @@ export class PatchView {
     mount(this.hosts.matrix, this.matrixCard());
     mount(this.hosts.groups, this.groupsCard());
     mount(this.hosts.profiles, this.profilesCard());
-    if (focusKey) this.el.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+    restoreFocus();
   }
 
   table(problems) {
@@ -272,6 +272,9 @@ export class PatchView {
   readdress(ids) {
     const { show } = this.store;
     const list = show.fixtures.filter((f) => ids.includes(f.id));
+    // The selection can name fixtures the show no longer has, if another window removed
+    // them or the engine came back with a different show.
+    if (!list.length) return;
     const first = list[0];
     let universe = first.universe;
     let address = first.address;
@@ -291,6 +294,7 @@ export class PatchView {
   spread(ids) {
     const { show } = this.store;
     const list = show.fixtures.filter((f) => ids.includes(f.id));
+    if (!list.length) return;
     const w = show.stage.width;
     const ops = list.map((f, i) => ({
       type: 'fixture.update',

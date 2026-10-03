@@ -10,10 +10,38 @@ import {
   parseSacnPacket,
   writeSacnPacket,
   OPTION_TERMINATED,
+  DISCOVERY_UNIVERSE,
+  discoveryPackets,
 } from '../server/output/sacn.js';
 import { ARTDMX_SIZE, ArtNetOutput, parseArtDmx, writeArtDmx } from '../server/output/artnet.js';
 
 const cid = cidFromUuid('6ba7b810-9dad-11d1-80b4-00c04fd430c8');
+
+test('sACN universe discovery matches the E1.31 section 6.4 layout', () => {
+  const [p] = discoveryPackets({ cid, sourceName: 'Test', universes: [2, 1, 5] });
+  assert.equal(p.length, 126, '120 header bytes plus two per universe');
+  assert.equal(p.readUInt16BE(0), 0x0010, 'preamble size');
+  assert.equal(p.subarray(4, 16).toString('latin1'), 'ASC-E1.17\0\0\0', 'ACN packet identifier');
+  assert.equal(p.readUInt16BE(16), 0x7000 | (p.length - 16), 'root flags and length');
+  assert.equal(p.readUInt32BE(18), 0x00000008, 'VECTOR_ROOT_E131_EXTENDED');
+  assert.deepEqual(p.subarray(22, 38), cid, 'CID');
+  assert.equal(p.readUInt16BE(38), 0x7000 | (p.length - 38), 'framing flags and length');
+  assert.equal(p.readUInt32BE(40), 0x00000002, 'VECTOR_E131_EXTENDED_DISCOVERY');
+  assert.equal(p.subarray(44, 108).toString('utf8').replace(/\0+$/, ''), 'Test', 'source name');
+  assert.equal(p.readUInt32BE(108), 0, 'reserved');
+  assert.equal(p.readUInt16BE(112), 0x7000 | (p.length - 112), 'discovery flags and length');
+  assert.equal(p.readUInt32BE(114), 0x00000001, 'VECTOR_UNIVERSE_DISCOVERY_UNIVERSE_LIST');
+  assert.equal(p[118], 0, 'page');
+  assert.equal(p[119], 0, 'last page');
+  assert.deepEqual([p.readUInt16BE(120), p.readUInt16BE(122), p.readUInt16BE(124)], [1, 2, 5], 'universes, ascending');
+  assert.equal(multicastAddress(DISCOVERY_UNIVERSE), '239.255.250.214', 'discovery goes to universe 64214');
+
+  // Over 512 universes pages, and every page says which of them it is.
+  const pages = discoveryPackets({ cid, sourceName: 'Test', universes: Array.from({ length: 600 }, (_, i) => i + 1) });
+  assert.equal(pages.length, 2);
+  assert.deepEqual(pages.map((b) => [b[118], b[119]]), [[0, 1], [1, 1]]);
+  assert.deepEqual(pages.map((b) => b.length), [120 + 512 * 2, 120 + 88 * 2]);
+});
 
 test('sACN packet matches the E1.31 layout byte for byte', () => {
   const data = new Uint8Array(512).map((_, i) => i & 0xff);

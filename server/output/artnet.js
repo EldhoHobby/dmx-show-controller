@@ -61,7 +61,18 @@ export class ArtNetOutput {
     return new Promise((resolve) => {
       const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       this.socket = socket;
-      socket.on('error', (err) => this.fail(err));
+      // See SacnOutput.open: a bind that fails never reaches the listening callback, so the
+      // promise has to settle from the error path as well or configure() hangs for ever.
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve(this);
+      };
+      socket.on('error', (err) => {
+        this.fail(err);
+        done();
+      });
       socket.bind({ port: 0, address: this.cfg.interface || undefined, exclusive: true }, () => {
         try {
           socket.setBroadcast(true);
@@ -69,7 +80,7 @@ export class ArtNetOutput {
         } catch (err) {
           this.fail(err);
         }
-        resolve(this);
+        done();
       });
     });
   }

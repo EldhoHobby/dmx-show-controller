@@ -9,7 +9,7 @@
 // on the floor), whichever way the fixture hangs: the pan/tilt change for a given spot move is
 // solved from the fixture's geometry.
 
-import { h, mount, icon, toast, numberInput } from '../lib/dom.js';
+import { h, mount, icon, toast, numberInput, keepFocus } from '../lib/dom.js';
 import { beamDirection } from '/shared/kinematics.js';
 import { clamp } from '/shared/util.js';
 
@@ -97,7 +97,7 @@ export class CalibrateView {
   render() {
     const st = this.store;
     if (!st.show || !this.el.isConnected) return;
-    const focusKey = document.activeElement?.dataset?.focusKey;
+    const restoreFocus = keepFocus(this.el);
     const show = st.show;
     const aud = show.stage.audience;
     const cal = this.calibrating;
@@ -147,7 +147,7 @@ export class CalibrateView {
         h('div', { class: 'cal-list' }, movers.map((rec) => this.moverRow(rec, cal, issues.get(rec.id)))),
       ) : null,
     );
-    if (focusKey) this.el.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+    restoreFocus();
   }
 
   moverRow(rec, cal, issue) {

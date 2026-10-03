@@ -21,6 +21,11 @@ function reject(socket, code, extraHeaders = '') {
  */
 export function attachWebSocketServer(server, { path = '/ws', maxPayload = 64 * 1024 * 1024, verifyOrigin, onConnection }) {
   server.on('upgrade', (req, socket, head) => {
+    // Node removes its own 'error' listener before emitting 'upgrade'. Every reject() below
+    // returns before WsConnection attaches one, so without this a peer that resets the
+    // connection during a refused handshake raises an uncaught ECONNRESET and ends the
+    // process — a blackout mid-show from one unauthenticated exchange.
+    socket.on('error', () => socket.destroy());
     let pathname = '';
     try {
       pathname = new URL(req.url, 'http://localhost').pathname;
@@ -70,6 +75,9 @@ export class WsConnection {
   }
 
   receive(chunk) {
+    // Nothing parses these bytes once the connection has failed or closed, so queueing them
+    // would grow without bound for as long as the peer keeps sending.
+    if (!this.open) return;
     this.chunks.push(chunk);
     this.buffered += chunk.length;
     while (this.open) {
@@ -222,6 +230,10 @@ export class WsConnection {
     b.writeUInt16BE(code, 0);
     this.writeFrame(OP.CLOSE, b);
     this.socket.end();
+    // end() is a half-close: it flushes the close frame but leaves the read side open. If
+    // the peer never closes its end, drop the socket rather than hold it for the process's
+    // lifetime. Unref'd so it cannot keep the engine alive on shutdown.
+    setTimeout(() => this.socket.destroy(), 5000).unref();
     this.closed();
   }
 

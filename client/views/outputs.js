@@ -20,6 +20,15 @@ export class OutputsView {
     this.rates = new Map();
     this.usbUniverse = 1;
     this.store.on('outputs', () => {
+      // The engine broadcasts this to every window whenever any of them applies. Replacing
+      // an edited draft would throw away work the operator has not applied yet, with no
+      // warning and no way back, so unapplied changes are kept and flagged instead.
+      if (this.dirty) {
+        this.conflict = true;
+        this.render();
+        return;
+      }
+      this.conflict = false;
       this.draft = structuredClone(this.store.outputs);
       this.render();
     });
@@ -58,8 +67,13 @@ export class OutputsView {
         sacn ? this.sacnCard(sacn, changed) : null,
         artnet ? this.artnetCard(artnet, changed) : null,
         this.usbCard(),
+        this.conflict
+          ? h('p', { class: 'notice warn' },
+              'Another window changed the output settings while you were editing. Your changes are still here — ',
+              'Apply to use them, or Revert to take the other window’s.')
+          : null,
         h('div', { class: 'row', style: { justifyContent: 'flex-end', marginTop: '12px' } },
-          h('button', { class: 'btn ghost', disabled: !this.dirty, onclick: () => ((this.draft = structuredClone(this.store.outputs)), changed()) }, 'Revert'),
+          h('button', { class: 'btn ghost', disabled: !this.dirty, onclick: () => ((this.draft = structuredClone(this.store.outputs)), (this.conflict = false), changed()) }, 'Revert'),
           h('button', { class: 'btn primary', disabled: !this.dirty, onclick: () => this.apply() }, 'Apply'),
         ),
       ),
@@ -70,6 +84,7 @@ export class OutputsView {
   }
 
   apply() {
+    this.conflict = false;
     this.store.setOutputs(this.draft);
     toast('Output settings sent to the engine.', 'ok');
   }

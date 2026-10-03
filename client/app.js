@@ -204,6 +204,7 @@ const views = {};
 let sideViz = null;
 let designEls = null;
 let liveView = null;
+let transport = null;
 
 function switchMode(mode) {
   if (app.mode === mode && root.dataset.built) return;
@@ -276,21 +277,27 @@ function transportBar() {
     h('a', { class: 'btn small hide-phone', href: '?view=visualizer', target: '_blank', title: 'Open the 3D view in its own window (for a second screen)' }, icon('popout', 14), '3D window'),
   );
   const update = () => playBtn.replaceChildren(icon(store.transport.playing ? 'pause' : 'play'));
-  store.on('transport', update);
-  store.on('frame', (pos) => {
-    if (!bar.isConnected) return;
-    const tempo = createTempo(store.show.tempo);
-    const p = tempo.barBeat(pos);
-    clock.textContent = formatTime(pos).slice(0, -1);
-    bb.textContent = `${p.bar}.${p.beat}`;
-  });
   const updateInfo = () => {
     bar.querySelector('[data-role="tempo"]').textContent = `${createTempo(store.show.tempo).bpm.toFixed(1)} BPM`;
     const a = bar.querySelector('[data-role="audio"]');
     a.textContent = app.hasMatchingAudio() ? audio.name : store.show.audio ? 'song not loaded here' : 'no song';
   };
-  store.on('show', updateInfo);
-  store.on('audio', updateInfo);
+  // This bar is rebuilt on every Edit/Live switch, so its subscriptions have to go with the
+  // old one. Without this each switch left another set of listeners pinning a detached
+  // footer, and every show or audio event ran them all against dead DOM.
+  const off = [
+    store.on('transport', update),
+    store.on('frame', (pos) => {
+      if (!bar.isConnected) return;
+      const tempo = createTempo(store.show.tempo);
+      const p = tempo.barBeat(pos);
+      clock.textContent = formatTime(pos).slice(0, -1);
+      bb.textContent = `${p.bar}.${p.beat}`;
+    }),
+    store.on('show', updateInfo),
+    store.on('audio', updateInfo),
+  ];
+  bar.dispose = () => off.forEach((fn) => fn?.());
   updateInfo();
   update();
   return bar;
@@ -316,6 +323,10 @@ function build() {
   root.dataset.built = '1';
   sideViz?.stop();
   liveView?.stop();
+  // mount() throws the old tree away, so the transport bar's store subscriptions have to be
+  // released here or they pile up one set per Edit/Live switch.
+  transport?.dispose?.();
+  transport = null;
   if (app.mode === 'live') {
     liveView = liveView || new LiveView(app);
     liveView.build();
@@ -352,7 +363,8 @@ function build() {
   }
   const side = h('aside', { class: 'side' }, sideViz.wrap, views.inspector.el);
   designEls = { nav, content };
-  mount(root, topbar(), h('div', { class: 'design' }, nav, content, side), transportBar());
+  transport = transportBar();
+  mount(root, topbar(), h('div', { class: 'design' }, nav, content, side), transport);
   renderDesignTab();
   sideViz.start();
 }
@@ -371,6 +383,7 @@ function buildVizOnly() {
   const canvas = h('canvas');
   const label = h('div', { class: 'viz-label' });
   mount(root, h('div', { class: 'viz-only' }, canvas, label));
+  root.dataset.built = '1';
   const viz = new Visualizer(store, canvas, { label });
   viz.start();
   store.on('frame', (pos) => {
@@ -436,8 +449,12 @@ window.addEventListener('blur', () => {
 store.ui.tab = localStorage.getItem('tab') || 'patch';
 store.on('error', (msg) => toast(msg, 'error', 6000));
 store.on('ready', () => {
-  if (vizOnly) buildVizOnly();
-  else if (!root.dataset.built) build();
+  // 'ready' fires on every reconnect, not just the first. Rebuilding the 3D window each
+  // time stranded a WebGL context and an animation loop per reconnect, and past the
+  // browser's context limit the oldest are force-lost and the view goes black mid-show.
+  if (vizOnly) {
+    if (!root.dataset.built) buildVizOnly();
+  } else if (!root.dataset.built) build();
   else refreshTopbar();
   restoreAudio();
 });

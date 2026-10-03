@@ -70,7 +70,11 @@ export function tempoMap(onset, frameRate, debug = null) {
   for (let w = 0; w < W; w++) {
     const ac = acs[w];
     const len = Math.min(win, n - starts[w]);
-    const norm = 1 / Math.max(ac[0], typical) || 0;
+    // A silent window has no energy of its own and, if most of the song is silent, no
+    // typical energy either. 1/0 is Infinity, which is truthy, so `|| 0` never caught it:
+    // every score downstream became NaN and the path collapsed to the slowest tempo.
+    const denom = Math.max(ac[0], typical);
+    const norm = denom > 0 ? 1 / denom : 0;
     const at = (L) => {
       const i = Math.floor(L);
       if (i + 1 >= len || i + 1 > maxLag) return 0;
@@ -103,10 +107,25 @@ export function tempoMap(onset, frameRate, debug = null) {
   // not (three hits to the slower beat put the faster one between hits half the time), so the
   // reading moves to the slower beat there.
   const octave = Math.round(Math.log(2) / Math.log(STEP));
+  // Halving a tempo never loses support — every other onset still lines up — so both
+  // readings of a fast track score alike and the 120 BPM preference decides, which tips to
+  // half time above about 170 BPM. Doubling, by contrast, needs onsets between the beats.
+  // So where a tempo's double is nearly as rhythmic as the tempo itself, the double is the
+  // real beat and the slower reading is held back. Reading half time is also the worse
+  // error to make: it puts every other onset off the grid, where double time keeps them all
+  // on it.
+  // Off-beat hi-hats put real onsets between the beats of slow music, so the double has to
+  // repeat nearly as strongly as the tempo itself before it counts as the beat. Measured on
+  // the demo synth from 60 to 200 BPM, this takes the tempos read an octave out from 13 of
+  // 24 down to 4, without breaking any that were right before.
+  const DOUBLE_IS_REAL = 0.7; // its double repeats at least this strongly as itself
+  const HALF_TIME_HOLD = 0.8; // how far the slower reading is then held back
   const emit = score.map((row, w) =>
     row.map((v, s) => {
       const half = beatLevel[w][s] >= 0.5 * (beatLevel[w][s - octave] || 0) ? row[s - octave] || 0 : 0;
-      return Math.max(v, 0.9 * (row[s + octave] || 0), 0.9 * half) / ref;
+      const doubleReal = beatLevel[w][s + octave] >= DOUBLE_IS_REAL * beatLevel[w][s];
+      const own = doubleReal ? v * HALF_TIME_HOLD : v;
+      return Math.max(own, 0.9 * (row[s + octave] || 0), 0.9 * half) / ref;
     }),
   );
   let acc = Float64Array.from(emit[0]);
