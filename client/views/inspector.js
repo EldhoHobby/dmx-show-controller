@@ -1,6 +1,6 @@
 // Side panel: properties of the selected clip, fixture or layer.
 
-import { h, mount, select, numberInput, textInput, icon } from '../lib/dom.js';
+import { h, mount, select, numberInput, textInput, icon, keepFocus } from '../lib/dom.js';
 import { CLIP_TYPES, KEYFRAME_PARAMS, EASINGS, defaultParams } from '/shared/clip-types.js';
 import { createTempo } from '/shared/tempo.js';
 import { channelName, footprint, profileCaps, resolveProfile } from '/shared/fixture-library.js';
@@ -21,7 +21,7 @@ export class Inspector {
   render() {
     const { show, ui } = this.store;
     if (!show) return;
-    const focusKey = document.activeElement?.dataset?.focusKey;
+    const restoreFocus = keepFocus(this.el);
     const clips = show.timeline.clips.filter((c) => ui.selectedClips.has(c.id));
     let body;
     if (clips.length === 1) body = this.clipPanel(clips[0]);
@@ -30,7 +30,7 @@ export class Inspector {
     else if (ui.tab === 'timeline' && ui.selectedTrack && show.timeline.tracks.some((t) => t.id === ui.selectedTrack)) body = this.trackPanel(show.timeline.tracks.find((t) => t.id === ui.selectedTrack));
     else body = this.hint();
     mount(this.el, body);
-    if (focusKey) this.el.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+    restoreFocus();
   }
 
   hint() {
