@@ -159,6 +159,15 @@ export function fixtureChannels(rec, s, wallMs, out = new Uint8Array(rec.profile
 const COLOR_INTENSITY = new Set(['red', 'green', 'blue', 'white', 'amber', 'uv']);
 
 /**
+ * The byte an intensity channel takes when the fixture is dark — where the grand master pulls
+ * a manual value as it comes down. Normally that is 0; an inverted channel is dark at the top
+ * of its range instead, so scaling towards 0 would drive it to FULL on blackout.
+ */
+function darkValue(ch) {
+  return ch.invert ? (ch.off ?? ch.max ?? 255) : 0;
+}
+
+/**
  * Render all fixtures into universe buffers (Map universe -> Uint8Array(512)).
  * Buffers are reused between frames; universes with no fixtures stay at zero.
  * Raw channel values from manual faders and scenes (states.raw) replace bytes last; those
@@ -196,7 +205,10 @@ export function renderUniverses(evaluator, states, wallMs, universes = new Map()
         const ownDimmer = Number.isInteger(ch.cell) && rec.cells ? cellDimmers(rec.profile).has(ch.cell) : rec.caps.dimmer;
         const carriesIntensity = ch.attr === 'dimmer' || (!ownDimmer && COLOR_INTENSITY.has(ch.attr));
         if (!carriesIntensity) buf[start + i] = v;
-        else if (!states.flash) buf[start + i] = Math.round(v * intensity);
+        else if (!states.flash) {
+          const dark = darkValue(ch);
+          buf[start + i] = clamp(Math.round(dark + (v - dark) * intensity), 0, 255);
+        }
       }
     }
   }

@@ -94,9 +94,12 @@ export function validateShow(show, { routedUniverses = null } = {}) {
   const trackIds = new Set(show.timeline.tracks.map((t) => t.id));
   const trackNames = new Map(show.timeline.tracks.map((t) => [t.id, t.name]));
   for (const c of show.timeline.clips) {
-    const label = `${CLIP_TYPES[c.type]?.label || c.type} clip at ${formatTime(c.start, false)}`;
+    // hasOwn: "__proto__" and other Object.prototype keys read back truthy from CLIP_TYPES,
+    // so a plain lookup would quietly pass a clip type the evaluator cannot play.
+    const def = Object.hasOwn(CLIP_TYPES, c.type) ? CLIP_TYPES[c.type] : null;
+    const label = `${def?.label || c.type} clip at ${formatTime(c.start, false)}`;
     const refs = { clips: [c.id] };
-    if (!CLIP_TYPES[c.type]) add('error', 'clip-type', `${label}: unknown clip type "${c.type}".`, refs);
+    if (!def) add('error', 'clip-type', `${label}: unknown clip type "${c.type}".`, refs);
     if (!trackIds.has(c.track)) add('error', 'clip-track', `${label}: its track no longer exists.`, refs);
     if (!(c.end > c.start)) add('error', 'clip-length', `${label}: ends before it starts.`, refs);
     if (c.start >= duration) add('warning', 'clip-after-end', `${label}: starts after the show ends.`, refs);

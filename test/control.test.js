@@ -53,6 +53,28 @@ test('raw channel values land exactly, but blackout and the grand master still g
   assert.equal(dmx[5], 77, 'non-intensity channels keep their value in blackout');
 });
 
+test('an inverted intensity channel is pulled to its dark end, not to zero', () => {
+  // A profile that declares `invert` is dark at the TOP of its range. Scaling a manual value
+  // towards 0, as a normal channel is scaled, sent this one to FULL on blackout.
+  const show = createShow('Inverted');
+  show.profiles = [{
+    id: 'test.invert-dimmer',
+    name: 'Inverted dimmer (1 ch)',
+    manufacturer: 'Test',
+    kind: 'dimmer',
+    channels: [{ attr: 'dimmer', invert: true }],
+  }];
+  applyOp(show, { type: 'fixture.add', fixture: { id: 'd1', name: 'Dim', profileId: 'test.invert-dimmer', universe: 1, address: 1, position: { x: 0, y: 3, z: 0 } } });
+  const raw = { d1: { 0: 75 } }; // held at 75, i.e. about 70% out on an inverted channel
+  const at = (live) => frame(show, { programmer: { attrs: {}, raw }, ...live }).dmx[0];
+  assert.equal(at({ master: 1 }), 75, 'the fader value goes out as set');
+  assert.equal(at({ master: 0.5 }), 165, 'half way between 75 and the dark end');
+  assert.equal(at({ master: 0 }), 255, 'the grand master down sends it to its dark end');
+  assert.equal(at({ master: 1, blackout: true }), 255, 'blackout too — 0 here would be full output');
+  // Without a manual value the renderer already got this right; it must still agree.
+  assert.equal(frame(show, { master: 1, blackout: true }).dmx[0], 255);
+});
+
 test('a raw channel moves only its own channel, not the rest of the fixture', () => {
   const show = rig();
   // 'rgb' has no dimmer channel, so intensity rides on its colour channels. Mirroring the

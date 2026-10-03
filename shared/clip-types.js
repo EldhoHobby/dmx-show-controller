@@ -189,7 +189,8 @@ export const EASINGS = [
 
 /** Default params for a new clip of a type: required params only; optionals stay unset. */
 export function defaultParams(type) {
-  const def = CLIP_TYPES[type];
+  // hasOwn, so "__proto__" and friends do not read back as a clip type that has no params.
+  const def = Object.hasOwn(CLIP_TYPES, type) ? CLIP_TYPES[type] : null;
   const params = {};
   if (!def) return params;
   for (const p of def.params) {

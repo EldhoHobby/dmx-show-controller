@@ -305,7 +305,9 @@ export class Session {
       }
     }
     if (Array.isArray(msg.lv) && msg.lv.length >= 4) {
-      const [low, mid, high, energy] = msg.lv.map((v) => (finite(v) ? clamp(v, 0, 1) : 0));
+      // Only the four bands, not the whole array: a window is meant to send four numbers, and
+      // mapping whatever arrived allocated a copy of it first.
+      const [low, mid, high, energy] = msg.lv.slice(0, 4).map((v) => (finite(v) ? clamp(v, 0, 1) : 0));
       r.env = { low, mid, high, energy };
       this.tracker.levels(msg.lv, at);
     }

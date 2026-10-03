@@ -255,7 +255,10 @@ export function normalizeClip(c, trackIds) {
   if (!isPlainObject(c)) return null;
   const id = str(c.id, '', 64);
   const type = str(c.type, '', 32);
-  if (!id || !CLIP_TYPES[type]) return null;
+  // hasOwn, not a plain lookup: "__proto__", "constructor" and "toString" all read back
+  // truthy from any object literal, so a clip claiming one of those as its type would be
+  // accepted here and then dispatched into Object.prototype by the evaluator.
+  if (!id || !Object.hasOwn(CLIP_TYPES, type)) return null;
   const start = Math.max(0, num(c.start));
   const end = Math.max(start + 1, num(c.end, start + 1000));
   return {
@@ -267,7 +270,10 @@ export function normalizeClip(c, trackIds) {
     end,
     fadeIn: Math.max(0, num(c.fadeIn)),
     fadeOut: Math.max(0, num(c.fadeOut)),
-    fixtures: Array.isArray(c.fixtures) ? c.fixtures.filter((x) => typeof x === 'string').slice(0, 1024) : [],
+    // A clip's fixture list is a set. Repeats are meaningless (the evaluator gives a fixture
+    // one slot however often it is listed) and they multiply: 1024 repeats of one pixel bar
+    // with 1024 cells is a million members to walk every frame, from a few kilobytes of file.
+    fixtures: Array.isArray(c.fixtures) ? [...new Set(c.fixtures.filter((x) => typeof x === 'string'))].slice(0, 1024) : [],
     params: isPlainObject(c.params) ? sanitizeJson(c.params) : {},
   };
 }
