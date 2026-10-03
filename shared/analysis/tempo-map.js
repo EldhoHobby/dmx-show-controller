@@ -25,6 +25,7 @@ const prior = (bpm) => Math.exp(-0.5 * (Math.log2(bpm / 120) / 0.9) ** 2);
 /**
  * @param onset      onset envelope (detrended, non-negative), one value per frame
  * @param frameRate  frames per second
+ * @param debug      optional object; the tempogram and path are written onto it for analyze.js
  * @returns {{ periodAt: Float32Array, segments: {from, to, period}[], period: number }}
  *   periodAt  beat period in frames at every frame
  *   segments  stretches of steady tempo (frames [from, to)), with their median period

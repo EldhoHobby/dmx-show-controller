@@ -77,6 +77,24 @@ test('a breakdown breathes on the beat clock and ignores stray kicks', () => {
   assert.deepEqual(washes.map((id) => a.get(id).dimmer), washes.map((id) => b.get(id).dimmer));
 });
 
+test('the speed dial stretches the beat-clock effects without touching the drum hits', () => {
+  const auto = snap({ section: 'groove', groove: { kick: 'none', backbeat: false, hats: true } });
+  const at = (speed) => livePlan(auto, { speed }, 10000);
+  const step = (p) => p.look.rhythm.params.step ?? p.look.rhythm.params.division;
+  // Halving the speed doubles how long each step is held.
+  assert.deepEqual([0.25, 0.5, 1, 2].map((s) => step(at(s))), [8, 4, 2, 1]);
+  // The look depends on the rate, so the prepared-layer cache key has to as well — without
+  // it the old speed keeps playing until something else happens to change the key.
+  assert.equal(new Set([0.25, 0.5, 1, 2].map((s) => at(s).key)).size, 4, 'each speed gets its own key');
+  // Out of range or nonsense falls back to something sane rather than a zero-length step.
+  for (const bad of [0, -1, 99, NaN, undefined]) {
+    assert.ok(step(at(bad)) > 0 && Number.isFinite(step(at(bad))), `speed ${bad}`);
+  }
+  // Pulses fire on the real drum, so the dial must not move them off the beat.
+  const kicky = (speed) => livePlan(snap({ section: 'drop', groove: { kick: 'four', backbeat: true, hats: true } }), { speed }, 10000);
+  assert.equal(kicky(0.25).kickPulse, kicky(2).kickPulse, 'kick-following is unchanged by the dial');
+});
+
 test('a build speeds its chase up with the snare roll and brings the strobes in', () => {
   const slow = livePlan(snap({ section: 'build', roll: 1 }), {}, 1000);
   const eighths = livePlan(snap({ section: 'build', roll: 2 }), {}, 1000);
@@ -88,6 +106,24 @@ test('a build speeds its chase up with the snare roll and brings the strobes in'
   assert.ok(s.get('strobe').strobe > 0.5);
 });
 
+test('the prepared-layer cache key decides the look, however long the set runs', () => {
+  // evaluate.js keeps the prepared layers in a cache under plan.key, so two frames landing on
+  // the same key must build the very same look — otherwise whichever one ran first plays for
+  // both, and the rig changes depending on what the operator happened to do earlier.
+  // The key carries the phrase index modulo twelve; passing sectionLook the raw count let a
+  // phrase so large that `p + 1` rounds back to `p` build a different look (a colour step with
+  // both of its colours the same) under a key that was already in the cache.
+  const auto = snap({ section: 'drop', sectionBeat: 0, period: 0 });
+  const byKey = new Map();
+  for (const now of [1e3, 16e3, 1e6, 1e9, 1e15, 1e20, 1e100, 1e300]) {
+    const plan = livePlan(auto, {}, now);
+    const seen = byKey.get(plan.key);
+    if (seen) assert.deepEqual(plan.look, seen.look, `key "${plan.key}": now=${now} differs from now=${seen.now}`);
+    else byKey.set(plan.key, { look: plan.look, now });
+  }
+  assert.ok(byKey.size > 1, 'the sweep covers more than one key');
+});
+
 test('every drop gets a new palette; phrases vary the look', () => {
   const p1 = livePlan(snap({ section: 'drop', drops: 1 }), {}, 0);
   const p2 = livePlan(snap({ section: 'drop', drops: 2 }), {}, 0);
@@ -96,5 +132,79 @@ test('every drop gets a new palette; phrases vary the look', () => {
   const later = livePlan(snap({ section: 'drop', sectionBeat: 0 }), {}, 33 * 500);
   assert.equal(early.phrase, 0);
   assert.equal(later.phrase, 1);
-  assert.notEqual(early.look.move.params.shape, later.look.move.params.shape);
+  // The rhythm still varies across a long drop, so it does not sit on one look. Not every
+  // neighbouring pair differs — the variation cycles over four phrases — so compare across.
+  const third = livePlan(snap({ section: 'drop', sectionBeat: 0 }), {}, 65 * 500);
+  assert.equal(third.phrase, 2);
+  assert.notDeepEqual(early.look.rhythm?.params, third.look.rhythm?.params);
+  // The movement shape deliberately does not: see 'the moving heads do not snap' below.
+  // It changes between sections instead, where the music changes with it.
+  assert.equal(early.look.move.params.shape, later.look.move.params.shape, 'steady within a section');
+  assert.notEqual(p1.look.move.params.shape, p2.look.move.params.shape, 'but each drop moves differently');
+});
+
+test('the moving heads do not snap when the phrase changes', () => {
+  // The movement shape used to be picked per phrase. A head given a new shape starts
+  // wherever that shape's maths puts the beam, and nothing can ease it: the state is
+  // rebuilt every frame, so there is no previous position to fade from. It measured
+  // 1459 deg/s inside one 25 ms frame on a phrase line — a lurch, not a change of look.
+  const ev = createEvaluator(rig());
+  const P = 500;
+  const FRAME = 25;
+  const prev = new Map();
+  let worst = 0;
+  let worstBeat = 0;
+  for (let beat = 0; beat < 100; beat += FRAME / P) {
+    const auto = snap({ section: 'drop', groove: { kick: 'four', backbeat: true, hats: true } });
+    const states = ev.evaluate(0, { master: 1, autoShow: true, reactive: reactive(auto) }, beat * P);
+    for (const id of ['mh0', 'mh1']) {
+      const s = states.get(id);
+      if (!s) continue;
+      const p = prev.get(id);
+      if (p) {
+        const speed = Math.hypot(s.pan - p.pan, s.tilt - p.tilt) / (FRAME / 1000);
+        if (speed > worst) {
+          worst = speed;
+          worstBeat = beat;
+        }
+      }
+      prev.set(id, { pan: s.pan, tilt: s.tilt });
+    }
+  }
+  // A fast moving head manages a few hundred degrees a second; anything past that is a jump.
+  assert.ok(worst < 400, `heads swing at ${worst.toFixed(0)} deg/s near beat ${worstBeat.toFixed(1)}`);
+});
+
+test('the washes follow the kick, not the bassline underneath it', () => {
+  // The low band is everything under 150 Hz, which is the kick and the bass together. In
+  // house music the bass sits on the off-beat, so every low hit firing a pulse made the
+  // washes flash about half as often again as the kick — the rig reading faster than the
+  // music. Hits off the clock's beat are dropped once there is a clock to judge them by.
+  const ev = createEvaluator(rig());
+  const P = 500;
+  const auto = snap({ section: 'drop', groove: { kick: 'four', backbeat: true, hats: true } });
+  const flashes = (withBass) => {
+    const lows = [];
+    for (let b = 0; b < 48; b++) {
+      lows.push(b * P);
+      if (withBass) lows.push((b + 0.5) * P);
+    }
+    let n = 0;
+    let lit = false;
+    for (let t = 0; t < 48 * P; t += 10) {
+      const last = lows.filter((x) => x <= t).pop() ?? null;
+      const states = ev.evaluate(0, { master: 1, autoShow: true, reactive: { ...reactive(auto), last: { low: last }, strength: { low: 1 } } }, t);
+      const d = Math.max(...washes.map((id) => states.get(id)?.dimmer ?? 0));
+      if (d > 0.55 && !lit) {
+        n++;
+        lit = true;
+      }
+      if (d < 0.35) lit = false;
+    }
+    return n;
+  };
+  const kickOnly = flashes(false);
+  const withBass = flashes(true);
+  assert.ok(kickOnly > 20, `the washes should follow the kick at all, got ${kickOnly}`);
+  assert.equal(withBass, kickOnly, `an off-beat bass added ${withBass - kickOnly} extra flashes`);
 });

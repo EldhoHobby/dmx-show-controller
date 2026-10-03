@@ -20,8 +20,21 @@
 const MIN_PERIOD = 60000 / 180;
 const MAX_PERIOD = 60000 / 80;
 const PHRASE = 32;
+// What the clock may hold, as opposed to what the estimator will guess at. Estimation stays
+// inside MIN/MAX_PERIOD, where guessing is reliable; an operator who presses "÷2" on a
+// 128 BPM track means 64, and clamping that to 80 would leave the rig wrong in a new way.
+const CLOCK_MIN_PERIOD = 60000 / 240;
+const CLOCK_MAX_PERIOD = 60000 / 40;
+// Tempo ratios that are the same music counted differently: half and double time, and the
+// triplet, shuffle and half-bar relatives. See checkClock().
+const FAMILY = [1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2];
 // How much a hit in each band says about where the beat is: kick, snare (mid), hi-hat.
 const WEIGHT = [1, 0.6, 0.35];
+// Ceilings for the rolling hit lists (see append below). The live detector tops out near 40
+// hits a second across all three bands, so 10 s of hits is about 400 and 16 s of hi-hats
+// about 320: these are several times anything the detector can produce.
+const MAX_HITS = 1024;
+const MAX_BAND = 512;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const mod = (n, m) => ((n % m) + m) % m;
 const wrap = (beats) => mod(beats + 0.5, 1) - 0.5; // -0.5..0.5
@@ -35,14 +48,23 @@ export function liveBeat(auto, now) {
   return auto?.period > 0 ? auto.anchorBeat + (now - auto.anchor) / auto.period : null;
 }
 
-/** Tempo from kick times: gaps folded into 80-180 BPM; 0 unless nearly all of them agree. */
-export function estimatePeriod(times) {
+/**
+ * Tempo from kick times; 0 unless nearly all the gaps agree.
+ *
+ * Gaps are folded by octaves into a window. With a tempo already running, the window is
+ * centred on it, so a missed kick (a doubled gap) or a stray one (a halved gap) folds back
+ * onto the tempo we are on instead of voting to change it. Only from a cold start does the
+ * fixed 80-180 BPM window apply, and that window is why a 70 BPM track used to run at 140.
+ */
+export function estimatePeriod(times, near = 0) {
+  const lo = near > 0 ? near / Math.SQRT2 : MIN_PERIOD;
+  const hi = near > 0 ? near * Math.SQRT2 : MAX_PERIOD;
   const gaps = [];
   for (let i = 1; i < times.length; i++) {
     let g = times[i] - times[i - 1];
     if (g < 200 || g > 2000) continue;
-    while (g > MAX_PERIOD) g /= 2;
-    while (g < MIN_PERIOD) g *= 2;
+    while (g > hi) g /= 2;
+    while (g < lo) g *= 2;
     gaps.push(g);
   }
   if (gaps.length < 4) return 0;
@@ -162,6 +184,26 @@ export function createLiveTracker() {
     while (i < list.length && (list[i].t ?? list[i]) < from) i++;
     return i ? list.slice(i) : list;
   };
+  /**
+   * Add to a rolling list of hits: in place, dropping anything older than `from` and then
+   * anything over `max`. The length cap is what keeps the engine real-time. The detector's
+   * refractory periods (120 ms kick, 90 ms snare, 50 ms hi-hat) mean real music can never
+   * reach these, but a window sending far faster than any detector would — a bug, or anything
+   * else that can open the live-audio socket — used to grow these lists without limit, and the
+   * work here is quadratic in their length: tempoFromHits compares every pair of hits, and a
+   * build's roll check tests every snare against every kick. Fifteen seconds of that and the
+   * frame loop stops putting DMX on the wire for a minute.
+   */
+  const append = (list, item, from, max) => {
+    list.push(item);
+    let i = 0;
+    while (i < list.length && (list[i].t ?? list[i]) < from) i++;
+    // Over the cap, drop back below it in one go rather than one hit per call: shifting a
+    // full list on every single hit is itself most of the cost under a flood.
+    if (list.length - i > max) i = list.length - max + (max >> 3);
+    if (i) list.splice(0, i);
+    return list;
+  };
   const setSection = (name, t, beat = Math.round(beatAt(t))) => {
     if (section === name) return;
     if (name === 'breakdown') {
@@ -218,7 +260,7 @@ export function createLiveTracker() {
 
   /** A new tempo; this time becomes beat `n`, counting on from the old clock. */
   function setClock(p, t, n = period ? Math.round(beatAt(t)) : anchorBeat) {
-    period = clamp(p, MIN_PERIOD, MAX_PERIOD);
+    period = clamp(p, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
     anchor = t;
     anchorBeat = n;
     if (!drops) barOffset = mod(n, 4); // until a drop pins bar 1, guess the lock starts a bar
@@ -228,15 +270,29 @@ export function createLiveTracker() {
     offPhase = null;
   }
 
-  /** Tempo from the latest kicks; this kick becomes a beat, counting on from the old clock. */
+  /**
+   * The kicks have stopped landing on the grid. Get back onto them.
+   *
+   * With no tempo yet, the kick gaps are all we have, so they set the clock. With a tempo
+   * already running they do NOT: nine kicks off a microphone are a poor tempo estimate, and
+   * trusting them was why the clock wandered — measured against a real 139.67 BPM track it
+   * ranged over 92-158 BPM and was only right about half the time, re-timing every chase
+   * and movement cycle each time it moved. Nearly always the tempo is still right and only
+   * the phase has slipped (a missed kick, a fill, a bar of silence), so the tempo is kept
+   * and the clock is simply re-anchored to this kick. A tempo that has genuinely changed is
+   * picked up by checkClock(), which weighs all the hits over 8 s and needs the new tempo
+   * to score clearly better and to hold before it switches.
+   */
   function relock(t) {
-    const p = estimatePeriod(kicks.slice(-9).map((k) => k.t));
+    const p = estimatePeriod(kicks.slice(-9).map((k) => k.t), period);
     if (!p) return false;
+    const rephaseOnly = period > 0;
+    const next = rephaseOnly ? period : p;
     const n = period ? Math.round(beatAt(t)) : anchorBeat;
-    setClock(p, t, n);
+    setClock(next, t, n);
     for (const k of kicks.slice(-9)) {
       k.matched = true;
-      marks.push({ t: k.t, n: n + Math.round((k.t - t) / p), w: 1 });
+      marks.push({ t: k.t, n: n + Math.round((k.t - t) / next), w: 1 });
     }
     return true;
   }
@@ -252,10 +308,16 @@ export function createLiveTracker() {
   function mark(t, n, w) {
     marks = keep([...marks, { t, n, w }], t - 16000).slice(-24);
     const fit = fitBeats(marks.slice(-16));
-    if (fit) {
+    // Refine the tempo, never relocate it. A couple of marks given the wrong beat number —
+    // routine with a microphone in a room — swing a least-squares slope a long way, and
+    // this runs on every on-beat kick and snare, so the clock chased those swings all show.
+    // A fit more than 6 % from the running tempo is not a refinement, it is a claim of a
+    // different tempo, and those have to prove themselves in checkClock() instead.
+    const refines = fit && (!period || Math.abs(Math.log(fit.period / period)) < Math.log(1.06));
+    if (refines) {
       // A straight line through the latest on-beat hits' beat numbers and times: jitter
       // averages out, so the clock stays true through a breakdown with nothing to follow.
-      period = clamp(fit.period, MIN_PERIOD, MAX_PERIOD);
+      period = clamp(fit.period, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
       anchor = fit.at(n);
       anchorBeat = n;
     } else {
@@ -264,13 +326,13 @@ export function createLiveTracker() {
       const err = t - (anchor + (n - anchorBeat) * period);
       anchor = anchor + (n - anchorBeat) * period + 0.6 * w * err;
       anchorBeat = n;
-      period = clamp(period + 0.1 * w * err, MIN_PERIOD, MAX_PERIOD);
+      period = clamp(period + 0.1 * w * err, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
     }
   }
 
   function onKick(t) {
     const k = { t, matched: false };
-    kicks = keep([...kicks, k], t - 16000);
+    append(kicks, k, t - 16000, MAX_BAND);
     if (!period) {
       lastKick = t;
       if (relock(t)) setSection('groove', t);
@@ -355,7 +417,7 @@ export function createLiveTracker() {
 
   /** A snare on the clock's beat tunes the clock like a kick, at a little over half weight. */
   function onSnare(t) {
-    snares = keep([...snares, t], t - 16000);
+    append(snares, t, t - 16000, MAX_BAND);
     if (!period || onKickBeat(t)) return;
     const n = Math.round(beatAt(t));
     const err = t - (anchor + (n - anchorBeat) * period);
@@ -380,12 +442,12 @@ export function createLiveTracker() {
   function hit(band, t) {
     if (t - lastHit > 3000) firstHit = t;
     lastHit = t;
-    hits = keep([...hits, { t, band }], t - 10000);
+    append(hits, { t, band }, t - 10000, MAX_HITS);
     if (band === 0) onKick(t);
     else if (band === 1) {
       onSnare(t);
       settleBars(t);
-    } else if (band === 2) hats = keep([...hats, t], t - 16000);
+    } else if (band === 2) append(hats, t, t - 16000, MAX_BAND);
   }
 
   function levels(lv, t) {
@@ -463,18 +525,37 @@ export function createLiveTracker() {
         setClock(p, last().t, 0);
         setSection(t - lastKick < 4 * p ? 'groove' : 'breakdown', t);
       } else if (p && period) {
-        // A different tempo (not just double or half time) that holds for 1.5 s: take it.
-        // While hits land on the clock's beats it must also score clearly better than the
-        // clock's own tempo, for 2 s: kicks can agree on the wrong beat (a 3-3-2 pattern locks
-        // onto its 3s) while the claps and everything else repeat at the real one, but music
-        // in 6/8 or with triplets fits several tempos about as well, and should keep its own.
+        // A different tempo that holds, and that explains the hits better than the clock we
+        // already have, replaces it. Two things make that judgement delicate.
+        //
+        // Kicks can agree on the wrong beat — a 3-3-2 pattern locks onto its own 4/3 while
+        // the claps know the real one — so corrections of exactly that shape have to be
+        // allowed through. But sparse drum detection also makes those same ratios win
+        // briefly and wrongly: on a real 140 BPM track through a microphone the clock slid
+        // between 93 (2/3), 105 (3/4) and 147 all the way through the song.
+        //
+        // The ratio cannot tell those two apart, because they are the same ratio. Time can:
+        // a correction keeps winning, a slip does not. So a metrical relative is held to
+        // the same score margin but must survive a full four checks, confirmed clock or
+        // not. Measured on that track, tempo moves over its 3:27 went from 18 to 11 while
+        // the 3-3-2 case still finds its true beat within five seconds.
         const ratio = p / period;
-        const same = [0.5, 1, 2].some((r) => Math.abs(Math.log(ratio / r)) < Math.log(1.03));
+        const relative = FAMILY.some((r) => Math.abs(Math.log(ratio / r)) < Math.log(1.04));
+        const same = Math.abs(Math.log(ratio)) < Math.log(1.03);
+        // How well the clock we have explains the hits, read at its own beat or an octave
+        // either side. Deliberately NOT the whole FAMILY: the challenger is itself usually a
+        // family member, so including those would measure the challenger against itself and
+        // nothing could ever win.
         const own = Math.max(...[0.5, 1, 2].map((r) => est.score(period * r)));
-        const better = !locked(t) || est.score(p) > 1.25 * own;
+        const held = locked(t);
+        // Even an unconfirmed clock has to be beaten, not just matched. This used to be a
+        // free pass whenever the clock was unconfirmed, which with sparse drum detection is
+        // most of the time, and that alone accounted for a third of the wandering.
+        const better = est.score(p) > (held ? 1.25 : 1.05) * own;
         if (same || !better) candidate = null;
         else if (candidate && Math.abs(Math.log(p / candidate.period)) < Math.log(1.02)) {
-          if (++candidate.votes >= (locked(t) ? 4 : 3)) {
+          // Checks run twice a second, so four votes is two seconds of agreement.
+          if (++candidate.votes >= (relative || held ? 4 : 3)) {
             const h = last();
             setClock(p, h.t, Math.round(beatAt(h.t)));
           }
@@ -571,10 +652,17 @@ export function createLiveTracker() {
     return section !== before;
   }
 
-  /** The clock is confirmed by hits on its beats (kicks, or snares) within the last two bars. */
+  /**
+   * The clock is confirmed by hits landing on its beats recently.
+   *
+   * Four bars, not two: a microphone in a room misses a lot of drums, so over two bars a
+   * perfectly good clock often has too few marks to count as confirmed — and an
+   * unconfirmed clock is the one checkClock() will replace most readily. Judging it over
+   * four bars is what makes that leniency rare instead of routine.
+   */
   function locked(t) {
     if (!period) return false;
-    return marks.filter((x) => x.t > t - 8 * period).length >= 3;
+    return marks.filter((x) => x.t > t - 16 * period).length >= 3;
   }
 
   function snapshot(t) {
@@ -597,7 +685,37 @@ export function createLiveTracker() {
     };
   }
 
-  return { hit, levels, update, snapshot, beatAt, get period() { return period; }, get section() { return section; } };
+  /**
+   * Move the clock by a fraction of a beat, or multiply its tempo. Both are operator
+   * corrections, because the two mistakes they fix cannot be settled from the audio.
+   *
+   * A 150 Hz low band carries the bassline as strongly as the kick, and in house music the
+   * bass sits on the off-beat. Once a track is mastered — any commercial one is — there are
+   * about as many low hits between the beats as on them, and the clock can settle half a
+   * beat out while reporting the right tempo and every sign of being locked. The mid band
+   * cannot break the tie either: the clap transient is squashed by the same limiting while
+   * the open hat and bass body leak into it. Someone in the room can see it in a moment.
+   *
+   * Likewise half and double time are both honest readings of the same drums, and which one
+   * is "the tempo" is a judgement about the music.
+   */
+  function nudge({ beats = 0, tempo = 1 } = {}, t) {
+    if (!period) return false;
+    if (tempo !== 1) {
+      const next = clamp(period / tempo, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
+      if (next === period) return false; // already at the end of the range
+      setClock(next, t, Math.round(beatAt(t)));
+      return true;
+    }
+    if (!beats) return false;
+    anchor += beats * period;
+    marks = [];
+    candidate = null;
+    offPhase = null;
+    return true;
+  }
+
+  return { hit, levels, update, snapshot, beatAt, nudge, get period() { return period; }, get section() { return section; } };
 }
 
 export const LIVE_PHRASE_BEATS = PHRASE;

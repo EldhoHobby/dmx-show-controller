@@ -62,6 +62,25 @@ test('a forward chase steps left to right by stage position, one fixture per bea
   assert.deepEqual(lit(2100), ['p1'], 'wraps around');
 });
 
+test('a chase always leaves something dark, however wide it is asked to be', () => {
+  const show = rig();
+  // Four fixtures, asked to light four at once: that is a flat wash, not a chase. The
+  // generated build chase hits this on a small rig — centre order folds a symmetric four
+  // into two rings and it asks for a width of two — so the climax of every build went flat.
+  clip(show, { id: 'w', type: 'chase', track: 'trk_rhythm', start: 0, end: 10000, fixtures: ['p1', 'p2', 'p3', 'p4'], params: { step: 1, direction: 'forward', width: 4, level: 1, order: 'x' } });
+  const ev = createEvaluator(show);
+  const dim = (t) => ['p1', 'p2', 'p3', 'p4'].map((id) => ev.evaluate(t).get(id).dimmer);
+  for (const t of [100, 600, 1100, 1600]) {
+    const d = dim(t);
+    assert.ok(Math.max(...d) - Math.min(...d) > 0.5, `at ${t} ms the chase is flat: ${d.join(', ')}`);
+  }
+  // Centre order on a symmetric rig: four fixtures, two rings, so width 2 would light both.
+  applyOp(show, { type: 'clip.update', id: 'w', changes: { params: { step: 1, direction: 'forward', width: 2, level: 1, order: 'center' } } });
+  const ev2 = createEvaluator(show);
+  const d2 = ['p1', 'p2', 'p3', 'p4'].map((id) => ev2.evaluate(100).get(id).dimmer);
+  assert.ok(Math.max(...d2) - Math.min(...d2) > 0.5, `centre order went flat: ${d2.join(', ')}`);
+});
+
 test('pulse peaks on the beat and decays', () => {
   const show = rig();
   clip(show, { id: 'p', type: 'pulse', track: 'trk_rhythm', start: 0, end: 10000, fixtures: ['p1'], params: { division: 1, decay: 0.5, level: 1 } });

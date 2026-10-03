@@ -1,4 +1,5 @@
-// HTTP: the browser app (static files) and the media API that caches song audio on the show
+// HTTP: the browser app (static files), /api/info (which is also how a second engine detects
+// this one and refuses to start), and the media API that caches song audio on the show
 // machine so every window, and a reload, can play it without re-loading the file.
 
 import fs from 'node:fs';
@@ -114,7 +115,10 @@ export function createRequestHandler({ root, mediaDir, log, getInfo }) {
       return sendJson(res, 200, { hash, stored: true });
     }
     fs.mkdirSync(mediaDir, { recursive: true });
-    const tmp = `${file}.${process.pid}.part`;
+    // A part file per upload, not per process: two windows sending the same song at once
+    // (the same hash, so the same name) were writing into one file and deleting each other's,
+    // which left one of them with a 500 even though the audio had arrived intact.
+    const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.part`;
     const out = fs.createWriteStream(tmp);
     const sha = crypto.createHash('sha256');
     let received = 0;

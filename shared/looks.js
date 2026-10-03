@@ -204,7 +204,13 @@ export function sectionLook(label, o = {}) {
   if (g?.backbeat && (label === 'groove' || energetic)) {
     look.backbeat = pulse(2, 0.35, lvlE(1), { offset: 1 });
   }
-  const mv = MOVES[label] ? pick(MOVES[label], p) : null;
+  // Movement shape is chosen per section, not per phrase. A moving head given a new shape
+  // starts wherever that shape's maths puts the beam, and nothing can ease that: the state
+  // is rebuilt every frame, so there is no previous position to fade from. Measured at
+  // 1459 deg/s inside one 25 ms frame on a phrase line — a lurch, not a change of look.
+  // Changing only at a section boundary keeps the variety but puts the jump where the
+  // music changes too, so it reads as intentional. `o.moveSeed` differs between sections.
+  const mv = MOVES[label] ? pick(MOVES[label], o.moveSeed ?? p) : null;
   if (mv) {
     const cycle = label === 'intro' || label === 'breakdown' || label === 'outro' ? mv.cycle : speed(mv.cycle);
     look.move = { type: 'movement', params: { ...mv, cycle, sizePan: mv.sizePan * style.movement, sizeTilt: mv.sizeTilt * style.movement, center: 'aim', order: 'x' } };

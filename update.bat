@@ -16,7 +16,7 @@ for /f "delims=" %%V in ('git describe --tags --always 2^>nul') do set "BEFORE=%
 echo This copy is at version %BEFORE%. Checking GitHub for a newer one...
 echo.
 
-rem A copy that was sent back to an older version (git checkout v0.3.2) returns to main first.
+rem A copy that was sent back to an older version (git checkout v0.3.3) returns to main first.
 git switch main >nul 2>nul
 git pull --ff-only
 if errorlevel 1 (

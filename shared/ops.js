@@ -171,14 +171,18 @@ export function applyOp(show, op) {
         show.profiles[i] = p;
         return { type: 'profile.add', profile: prev };
       }
-      show.profiles.push(p);
+      // Like fixture.add and clip.add: honour an index, so profile.remove's inverse puts the
+      // profile back where it was. Appending instead reordered show.profiles, which made undo
+      // (and a failed batch's rollback) leave a show that was not the one it started from.
+      const index = Number.isInteger(op.index) ? Math.max(0, Math.min(op.index, show.profiles.length)) : show.profiles.length;
+      show.profiles.splice(index, 0, p);
       return { type: 'profile.remove', id: p.id };
     }
 
     case 'profile.remove': {
       const i = indexById(show.profiles, op.id, 'Profile');
       const [prev] = show.profiles.splice(i, 1);
-      return { type: 'profile.add', profile: prev };
+      return { type: 'profile.add', profile: prev, index: i };
     }
 
     case 'fixture.add': {

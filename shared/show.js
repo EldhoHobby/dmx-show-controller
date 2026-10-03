@@ -164,14 +164,22 @@ export function normalizeScene(s) {
 export const REACTIVE_BANDS = ['low', 'mid', 'high'];
 export const REACTIVE_ACTIONS = ['pulse', 'flash', 'strobe', 'colorStep', 'follow', 'scene'];
 
-/** Kick pumps the washes, the mid band (snare, vocals) steps their colour, hi-hats flick the movers. */
 /** Looks the live auto show can play (see shared/looks.js STYLES). */
 export const AUTO_STYLES = ['calm', 'balanced', 'energetic'];
+// A quarter speed holds a look for four beats where it would have held one; double is as
+// fast as anything stays watchable. 1 is "as the style intends".
+export const AUTO_SPEED_MIN = 0.25;
+export const AUTO_SPEED_MAX = 2;
 
+/** Kick pumps the washes, the mid band (snare, vocals) steps their colour, hi-hats flick the movers. */
 export function defaultReactive() {
   return {
     sensitivity: { low: 1, mid: 1, high: 1 },
     autoStyle: 'balanced',
+    // How fast the auto show's chases, steps and movement run, as a multiple of the style's
+    // own rate. 1 = on the beat; below 1 holds each look longer, which is what a room wants
+    // when the lighting feels busier than the music.
+    autoSpeed: 1,
     mappings: [
       { id: 'map_kick', band: 'low', action: 'pulse', target: 'role:wash', amount: 1, decayMs: 260, sceneId: '', colors: [] },
       {
@@ -212,6 +220,7 @@ export function normalizeReactive(r) {
   return {
     sensitivity: { low: s(sens.low), mid: s(sens.mid), high: s(sens.high) },
     autoStyle: AUTO_STYLES.includes(r.autoStyle) ? r.autoStyle : 'balanced',
+    autoSpeed: clampTo(num(r.autoSpeed, 1), AUTO_SPEED_MIN, AUTO_SPEED_MAX),
     mappings: dedupe((Array.isArray(r.mappings) ? r.mappings : []).map(normalizeMapping).filter(Boolean)).slice(0, 32),
   };
 }
@@ -246,7 +255,10 @@ export function normalizeClip(c, trackIds) {
   if (!isPlainObject(c)) return null;
   const id = str(c.id, '', 64);
   const type = str(c.type, '', 32);
-  if (!id || !CLIP_TYPES[type]) return null;
+  // hasOwn, not a plain lookup: "__proto__", "constructor" and "toString" all read back
+  // truthy from any object literal, so a clip claiming one of those as its type would be
+  // accepted here and then dispatched into Object.prototype by the evaluator.
+  if (!id || !Object.hasOwn(CLIP_TYPES, type)) return null;
   const start = Math.max(0, num(c.start));
   const end = Math.max(start + 1, num(c.end, start + 1000));
   return {
@@ -258,7 +270,10 @@ export function normalizeClip(c, trackIds) {
     end,
     fadeIn: Math.max(0, num(c.fadeIn)),
     fadeOut: Math.max(0, num(c.fadeOut)),
-    fixtures: Array.isArray(c.fixtures) ? c.fixtures.filter((x) => typeof x === 'string').slice(0, 1024) : [],
+    // A clip's fixture list is a set. Repeats are meaningless (the evaluator gives a fixture
+    // one slot however often it is listed) and they multiply: 1024 repeats of one pixel bar
+    // with 1024 cells is a million members to walk every frame, from a few kilobytes of file.
+    fixtures: Array.isArray(c.fixtures) ? [...new Set(c.fixtures.filter((x) => typeof x === 'string'))].slice(0, 1024) : [],
     params: isPlainObject(c.params) ? sanitizeJson(c.params) : {},
   };
 }

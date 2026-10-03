@@ -263,6 +263,15 @@ export class Store {
     return true;
   }
 
+  /** Correct the live beat clock by hand: shift it by a fraction of a beat, or halve/double it. */
+  nudgeBeat(changes) {
+    if (!this.net.send({ t: 'beat', ...changes })) {
+      this.emit('error', 'Not connected to the engine — the beat clock did not move.');
+      return false;
+    }
+    return true;
+  }
+
   /** Everything the evaluator needs on top of the show; the same as the engine's liveContext(). */
   liveContext() {
     return { ...this.live, programmer: this.programmer, reactive: this.reactive };
@@ -300,7 +309,7 @@ export class Store {
   }
 
   sendProgrammer(msg) {
-    if (!this.net.open) return this.emit('error', 'Not connected to the engine.');
+    if (!this.net.open) return this.emit('error', 'Not connected to the engine — the faders did not reach the lights.');
     const seq = ++this.prog.seq;
     this.prog.inflight.push({ seq, msg });
     this.net.send({ t: 'programmer', seq, ...msg });

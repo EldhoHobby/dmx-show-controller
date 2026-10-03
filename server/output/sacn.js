@@ -1,7 +1,11 @@
 // sACN (ANSI E1.31-2018) data packets: one 638-byte UDP packet per universe per frame,
 // multicast to 239.255.<hi>.<lo> or unicast to a node, port 5568.
 //
-// Layout (offsets in bytes):
+// Also Universe Discovery (section 6.4): a 120 + 2xN byte packet listing the universes this
+// source drives, every 10 s, to 239.255.250.214. Without it, monitoring tools cannot see
+// this controller at all.
+//
+// Data packet layout (offsets in bytes):
 //   0  root layer      preamble 0x0010, postamble 0, "ASC-E1.17", flags+length, vector 4, CID
 //   38 framing layer   flags+length, vector 2, source name[64], priority, sync addr, sequence,
 //                      options, universe
@@ -145,6 +149,11 @@ export class SacnOutput {
    * @param {'multicast'|'unicast'} cfg.mode
    * @param {string} cfg.unicast      node IP for unicast mode
    * @param {string} cfg.interface    local IP of the NIC to send multicast from ('' = OS default)
+   * @param {string} cfg.sourceName   source name carried in data and discovery packets
+   * @param {number} [cfg.priority]   E1.31 priority 0-200 (default 100)
+   * @param {number} [cfg.ttl]        multicast TTL (default 1)
+   * @param {number} [cfg.port]       non-standard destination port for data and discovery
+   *                                  (default 5568)
    */
   constructor(cfg) {
     this.cfg = cfg;
@@ -250,7 +259,7 @@ export class SacnOutput {
     }
   }
 
-  /** E1.31 6.2.6: send three Stream_Terminated packets so receivers release immediately. */
+  /** Stop announcing, then (E1.31 6.2.6) send three Stream_Terminated packets so receivers release immediately. */
   async close() {
     clearInterval(this.discoveryTimer);
     this.discoveryTimer = null;

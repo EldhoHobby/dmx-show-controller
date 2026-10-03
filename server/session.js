@@ -15,6 +15,10 @@ import { applyOp, isNoop } from '../shared/ops.js';
 export const now = () => performance.timeOrigin + performance.now();
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+// How much unsent show traffic a window may have queued before we give up on it. A whole
+// show replace is the largest single message and runs to a few hundred KB on a big show,
+// so this is roomy enough that only a window that has genuinely stopped reading hits it.
+const MAX_CLIENT_BACKLOG = 4 * 1024 * 1024;
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
 
 function emptyReactive() {
@@ -305,7 +309,9 @@ export class Session {
       }
     }
     if (Array.isArray(msg.lv) && msg.lv.length >= 4) {
-      const [low, mid, high, energy] = msg.lv.map((v) => (finite(v) ? clamp(v, 0, 1) : 0));
+      // Only the four bands, not the whole array: a window is meant to send four numbers, and
+      // mapping whatever arrived allocated a copy of it first.
+      const [low, mid, high, energy] = msg.lv.slice(0, 4).map((v) => (finite(v) ? clamp(v, 0, 1) : 0));
       r.env = { low, mid, high, energy };
       this.tracker.levels(msg.lv, at);
     }
@@ -318,6 +324,21 @@ export class Session {
     }
     this.reactiveDirty = true;
     if (hit && (this.live.audioReactive || this.live.autoShow) && this.onAudioHit) this.onAudioHit(t);
+  }
+
+  /**
+   * An operator correction to the live beat clock: shift it by a fraction of a beat, or
+   * halve/double its tempo. Both fix readings the audio itself cannot settle — see
+   * createLiveTracker's nudge().
+   */
+  handleBeat(client, msg) {
+    const t = now();
+    const beats = Number.isFinite(msg.beats) ? clamp(msg.beats, -1, 1) : 0;
+    const tempo = msg.tempo === 2 || msg.tempo === 0.5 ? msg.tempo : 1;
+    if (!this.tracker.nudge({ beats, tempo }, t)) return;
+    this.reactive.auto = this.tracker.snapshot(t);
+    this.reactiveDirty = true;
+    this.broadcast({ t: 'reactive', reactive: this.reactive });
   }
 
   /**
@@ -420,6 +441,9 @@ export class Session {
       case 'au':
         this.handleAudio(client, msg);
         break;
+      case 'beat':
+        this.handleBeat(client, msg);
+        break;
       case 'op':
         this.applyClientOp(client, msg);
         break;
@@ -476,10 +500,31 @@ export class Session {
     if (client.conn.open) client.conn.send(JSON.stringify(obj));
   }
 
+  /**
+   * Send to every window. A socket whose backlog has run away is closed rather than fed.
+   *
+   * Dropping a message here is not an option the way it is for USB frames: the next frame
+   * replaces the last, but miss one `op` and that window's copy of the show is quietly
+   * wrong for the rest of the night. So the socket goes, and the client's own reconnect
+   * brings it back with a `welcome` that re-sends the show in full.
+   *
+   * Without this, one window that stops reading — a laptop asleep, a tab the OS has frozen,
+   * a half-open Wi-Fi connection — grows the engine without limit: measured at 72 MB going
+   * to 983 MB after 156 MB of queued broadcasts, still climbing. DMX keeps flowing, so it
+   * is a slow death rather than an outage, which is worse: it kills a machine left running.
+   */
   broadcast(obj) {
     const text = JSON.stringify(obj);
-    // The live-audio worker only sends; keep its socket free of show traffic.
-    for (const c of this.clients.values()) if (c.conn.open && c.view !== 'audio') c.conn.send(text);
+    for (const c of this.clients.values()) {
+      // The live-audio worker only sends; keep its socket free of show traffic.
+      if (!c.conn.open || c.view === 'audio') continue;
+      if (c.conn.bufferedAmount > MAX_CLIENT_BACKLOG) {
+        this.log?.warn(`${c.name} stopped reading (${Math.round(c.conn.bufferedAmount / 1024)} KB queued); closing it so it can reconnect`);
+        c.conn.close(1008);
+        continue;
+      }
+      c.conn.send(text);
+    }
   }
 
   clientList() {
