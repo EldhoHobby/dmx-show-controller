@@ -106,6 +106,24 @@ test('a build speeds its chase up with the snare roll and brings the strobes in'
   assert.ok(s.get('strobe').strobe > 0.5);
 });
 
+test('the prepared-layer cache key decides the look, however long the set runs', () => {
+  // evaluate.js keeps the prepared layers in a cache under plan.key, so two frames landing on
+  // the same key must build the very same look — otherwise whichever one ran first plays for
+  // both, and the rig changes depending on what the operator happened to do earlier.
+  // The key carries the phrase index modulo twelve; passing sectionLook the raw count let a
+  // phrase so large that `p + 1` rounds back to `p` build a different look (a colour step with
+  // both of its colours the same) under a key that was already in the cache.
+  const auto = snap({ section: 'drop', sectionBeat: 0, period: 0 });
+  const byKey = new Map();
+  for (const now of [1e3, 16e3, 1e6, 1e9, 1e15, 1e20, 1e100, 1e300]) {
+    const plan = livePlan(auto, {}, now);
+    const seen = byKey.get(plan.key);
+    if (seen) assert.deepEqual(plan.look, seen.look, `key "${plan.key}": now=${now} differs from now=${seen.now}`);
+    else byKey.set(plan.key, { look: plan.look, now });
+  }
+  assert.ok(byKey.size > 1, 'the sweep covers more than one key');
+});
+
 test('every drop gets a new palette; phrases vary the look', () => {
   const p1 = livePlan(snap({ section: 'drop', drops: 1 }), {}, 0);
   const p2 = livePlan(snap({ section: 'drop', drops: 2 }), {}, 0);
@@ -114,5 +132,45 @@ test('every drop gets a new palette; phrases vary the look', () => {
   const later = livePlan(snap({ section: 'drop', sectionBeat: 0 }), {}, 33 * 500);
   assert.equal(early.phrase, 0);
   assert.equal(later.phrase, 1);
-  assert.notEqual(early.look.move.params.shape, later.look.move.params.shape);
+  // The rhythm still varies across a long drop, so it does not sit on one look. Not every
+  // neighbouring pair differs — the variation cycles over four phrases — so compare across.
+  const third = livePlan(snap({ section: 'drop', sectionBeat: 0 }), {}, 65 * 500);
+  assert.equal(third.phrase, 2);
+  assert.notDeepEqual(early.look.rhythm?.params, third.look.rhythm?.params);
+  // The movement shape deliberately does not: see 'the moving heads do not snap' below.
+  // It changes between sections instead, where the music changes with it.
+  assert.equal(early.look.move.params.shape, later.look.move.params.shape, 'steady within a section');
+  assert.notEqual(p1.look.move.params.shape, p2.look.move.params.shape, 'but each drop moves differently');
+});
+
+test('the moving heads do not snap when the phrase changes', () => {
+  // The movement shape used to be picked per phrase. A head given a new shape starts
+  // wherever that shape's maths puts the beam, and nothing can ease it: the state is
+  // rebuilt every frame, so there is no previous position to fade from. It measured
+  // 1459 deg/s inside one 25 ms frame on a phrase line — a lurch, not a change of look.
+  const ev = createEvaluator(rig());
+  const P = 500;
+  const FRAME = 25;
+  const prev = new Map();
+  let worst = 0;
+  let worstBeat = 0;
+  for (let beat = 0; beat < 100; beat += FRAME / P) {
+    const auto = snap({ section: 'drop', groove: { kick: 'four', backbeat: true, hats: true } });
+    const states = ev.evaluate(0, { master: 1, autoShow: true, reactive: reactive(auto) }, beat * P);
+    for (const id of ['mh0', 'mh1']) {
+      const s = states.get(id);
+      if (!s) continue;
+      const p = prev.get(id);
+      if (p) {
+        const speed = Math.hypot(s.pan - p.pan, s.tilt - p.tilt) / (FRAME / 1000);
+        if (speed > worst) {
+          worst = speed;
+          worstBeat = beat;
+        }
+      }
+      prev.set(id, { pan: s.pan, tilt: s.tilt });
+    }
+  }
+  // A fast moving head manages a few hundred degrees a second; anything past that is a jump.
+  assert.ok(worst < 400, `heads swing at ${worst.toFixed(0)} deg/s near beat ${worstBeat.toFixed(1)}`);
 });
