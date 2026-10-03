@@ -207,11 +207,15 @@ const HANDLERS = {
   chase(pc, t, beat, alpha, states) {
     const p = pc.clip.params;
     const step = posNum(p.step, 1);
-    const width = Math.max(1, Math.round(num(p.width, 1)));
     const tail = Math.max(0, Math.round(num(p.tail, 0)));
     const level = num(p.level, 1);
     const dir = p.direction || 'forward';
     const n = pc.slotCount;
+    // Lighting every slot at once is a flat wash, not a chase, so leave at least one dark.
+    // It bites hardest where nobody chose the width: the generated build chase asks for 2,
+    // and centre order on a symmetric four-wash rig collapses to two rings — so the climax
+    // of every build went flat on a small rig instead of running its fastest chase.
+    const width = Math.min(Math.max(1, Math.round(num(p.width, 1))), Math.max(1, n - 1));
     const k = Math.floor(beat / step);
     let head;
     if (dir === 'backward') head = n - 1 - mod(k, n);
