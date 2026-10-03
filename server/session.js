@@ -321,6 +321,21 @@ export class Session {
   }
 
   /**
+   * An operator correction to the live beat clock: shift it by a fraction of a beat, or
+   * halve/double its tempo. Both fix readings the audio itself cannot settle — see
+   * createLiveTracker's nudge().
+   */
+  handleBeat(client, msg) {
+    const t = now();
+    const beats = Number.isFinite(msg.beats) ? clamp(msg.beats, -1, 1) : 0;
+    const tempo = msg.tempo === 2 || msg.tempo === 0.5 ? msg.tempo : 1;
+    if (!this.tracker.nudge({ beats, tempo }, t)) return;
+    this.reactive.auto = this.tracker.snapshot(t);
+    this.reactiveDirty = true;
+    this.broadcast({ t: 'reactive', reactive: this.reactive });
+  }
+
+  /**
    * Called every frame: the song part can change with no hit at all (the kick stops, the
    * input goes quiet), so the tracker is advanced here too.
    */
@@ -419,6 +434,9 @@ export class Session {
         break;
       case 'au':
         this.handleAudio(client, msg);
+        break;
+      case 'beat':
+        this.handleBeat(client, msg);
         break;
       case 'op':
         this.applyClientOp(client, msg);

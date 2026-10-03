@@ -20,6 +20,11 @@
 const MIN_PERIOD = 60000 / 180;
 const MAX_PERIOD = 60000 / 80;
 const PHRASE = 32;
+// What the clock may hold, as opposed to what the estimator will guess at. Estimation stays
+// inside MIN/MAX_PERIOD, where guessing is reliable; an operator who presses "÷2" on a
+// 128 BPM track means 64, and clamping that to 80 would leave the rig wrong in a new way.
+const CLOCK_MIN_PERIOD = 60000 / 240;
+const CLOCK_MAX_PERIOD = 60000 / 40;
 // Tempo ratios that are the same music counted differently: half and double time, and the
 // triplet, shuffle and half-bar relatives. See checkClock().
 const FAMILY = [1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2];
@@ -230,7 +235,7 @@ export function createLiveTracker() {
 
   /** A new tempo; this time becomes beat `n`, counting on from the old clock. */
   function setClock(p, t, n = period ? Math.round(beatAt(t)) : anchorBeat) {
-    period = clamp(p, MIN_PERIOD, MAX_PERIOD);
+    period = clamp(p, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
     anchor = t;
     anchorBeat = n;
     if (!drops) barOffset = mod(n, 4); // until a drop pins bar 1, guess the lock starts a bar
@@ -287,7 +292,7 @@ export function createLiveTracker() {
     if (refines) {
       // A straight line through the latest on-beat hits' beat numbers and times: jitter
       // averages out, so the clock stays true through a breakdown with nothing to follow.
-      period = clamp(fit.period, MIN_PERIOD, MAX_PERIOD);
+      period = clamp(fit.period, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
       anchor = fit.at(n);
       anchorBeat = n;
     } else {
@@ -296,7 +301,7 @@ export function createLiveTracker() {
       const err = t - (anchor + (n - anchorBeat) * period);
       anchor = anchor + (n - anchorBeat) * period + 0.6 * w * err;
       anchorBeat = n;
-      period = clamp(period + 0.1 * w * err, MIN_PERIOD, MAX_PERIOD);
+      period = clamp(period + 0.1 * w * err, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
     }
   }
 
@@ -655,7 +660,37 @@ export function createLiveTracker() {
     };
   }
 
-  return { hit, levels, update, snapshot, beatAt, get period() { return period; }, get section() { return section; } };
+  /**
+   * Move the clock by a fraction of a beat, or multiply its tempo. Both are operator
+   * corrections, because the two mistakes they fix cannot be settled from the audio.
+   *
+   * A 150 Hz low band carries the bassline as strongly as the kick, and in house music the
+   * bass sits on the off-beat. Once a track is mastered — any commercial one is — there are
+   * about as many low hits between the beats as on them, and the clock can settle half a
+   * beat out while reporting the right tempo and every sign of being locked. The mid band
+   * cannot break the tie either: the clap transient is squashed by the same limiting while
+   * the open hat and bass body leak into it. Someone in the room can see it in a moment.
+   *
+   * Likewise half and double time are both honest readings of the same drums, and which one
+   * is "the tempo" is a judgement about the music.
+   */
+  function nudge({ beats = 0, tempo = 1 } = {}, t) {
+    if (!period) return false;
+    if (tempo !== 1) {
+      const next = clamp(period / tempo, CLOCK_MIN_PERIOD, CLOCK_MAX_PERIOD);
+      if (next === period) return false; // already at the end of the range
+      setClock(next, t, Math.round(beatAt(t)));
+      return true;
+    }
+    if (!beats) return false;
+    anchor += beats * period;
+    marks = [];
+    candidate = null;
+    offPhase = null;
+    return true;
+  }
+
+  return { hit, levels, update, snapshot, beatAt, nudge, get period() { return period; }, get section() { return section; } };
 }
 
 export const LIVE_PHRASE_BEATS = PHRASE;

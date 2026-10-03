@@ -182,3 +182,43 @@ test('the demo song through the real live detector: both drops caught on the bea
   drops.forEach((d, i) => assert.ok(Math.abs(d - truth[i]) < 60, `drop ${i + 1} ${(d - truth[i]).toFixed(0)} ms from the truth`));
   assert.ok(Math.abs(tr.snapshot(demo.durationMs).bpm - 128) < 0.5);
 });
+
+test('the operator can shift the clock half a beat and halve or double its tempo', () => {
+  // Neither correction can be settled from the audio. A 150 Hz band hears the bassline as
+  // loudly as the kick, and in house music the bass is off the beat, so a mastered track
+  // can settle the clock half a beat out while reporting the right tempo. Half and double
+  // time are both honest readings of the same drums. A human in the room decides.
+  const tr = createLiveTracker();
+  const P = 60000 / 128;
+  let t = 0;
+  for (let b = 0; b < 40; b++) {
+    t = 1000 + b * P;
+    tr.hit(0, t);
+    tr.update(t);
+  }
+  const offBeatMs = () => {
+    const b = tr.beatAt(t);
+    return Math.abs(b - Math.round(b)) * tr.period;
+  };
+  const bpm = () => 60000 / tr.period;
+  assert.ok(Math.abs(bpm() - 128) < 0.5, `locked at ${bpm()}`);
+  assert.ok(offBeatMs() < 5, 'the kick starts on the clock');
+
+  tr.nudge({ beats: 0.5 }, t);
+  assert.ok(Math.abs(offBeatMs() - P / 2) < 5, 'shifted half a beat');
+  assert.ok(Math.abs(bpm() - 128) < 0.5, 'and the tempo did not move');
+  tr.nudge({ beats: 0.5 }, t);
+  assert.ok(offBeatMs() < 5, 'shifting again comes back to the beat');
+
+  // Halving has to actually reach 64, not stop at the estimator's 80 BPM floor, or the
+  // operator is left wrong in a new way — and doubling must undo it exactly.
+  tr.nudge({ tempo: 0.5 }, t);
+  assert.ok(Math.abs(bpm() - 64) < 0.5, `halved to ${bpm()}`);
+  tr.nudge({ tempo: 2 }, t);
+  assert.ok(Math.abs(bpm() - 128) < 0.5, `doubled back to ${bpm()}`);
+
+  // Nothing to nudge, and the end of the range, both report that nothing happened.
+  assert.equal(createLiveTracker().nudge({ beats: 0.5 }, 0), false, 'no tempo yet');
+  for (let i = 0; i < 8; i++) tr.nudge({ tempo: 0.5 }, t);
+  assert.equal(tr.nudge({ tempo: 0.5 }, t), false, 'already at the floor');
+});

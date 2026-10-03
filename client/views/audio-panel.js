@@ -135,6 +135,7 @@ export class AudioPanel {
           h('div', { class: 'beat-dots', title: 'The beat the auto show is following' }, this.beatDots),
         ),
         this.speedRow(show),
+        this.beatRow(),
         this.autoStatus,
       ),
       h('details', { class: 'reactions', open: this.showReactions, ontoggle: (e) => {
@@ -246,6 +247,31 @@ export class AudioPanel {
       h('span', { class: 'muted', style: { width: '42px' } }, 'Speed'),
       slider,
       label,
+    );
+  }
+
+  /**
+   * Correcting the beat clock by hand.
+   *
+   * Two readings of the music cannot be settled from the audio, however good the detection
+   * is. A 150 Hz band hears the bassline as loudly as the kick, and in house music the bass
+   * is on the off-beat — so on a mastered track there are about as many low hits between
+   * the beats as on them, and the clock can sit half a beat out while reporting the right
+   * tempo and every sign of being locked. And half or double time are both honest readings
+   * of the same drums. Someone standing in the room settles either in one tap.
+   */
+  beatRow() {
+    const tap = (label, title, changes) =>
+      h('button', {
+        class: 'btn small',
+        title,
+        onclick: () => this.store.nudgeBeat(changes),
+      }, label);
+    return h('div', { class: 'row wrap', style: { gap: '4px', fontSize: '12px' } },
+      h('span', { class: 'muted', style: { width: '42px' } }, 'Beat'),
+      tap('½ beat', 'The lights are landing between the beats: shift the clock half a beat', { beats: 0.5 }),
+      tap('÷2', 'The lights are running at twice the music: halve the tempo', { tempo: 0.5 }),
+      tap('×2', 'The lights are running at half the music: double the tempo', { tempo: 2 }),
     );
   }
 
